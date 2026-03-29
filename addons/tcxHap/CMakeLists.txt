@@ -23,6 +23,8 @@ FetchContent_Declare(
 set(SNAPPY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(SNAPPY_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(SNAPPY_INSTALL OFF CACHE BOOL "" FORCE)
+# Request shared build for snappy when building DLLs
+set(BUILD_SHARED_LIBS ON CACHE BOOL "Build shared libraries for dependencies (where supported)" FORCE)
 FetchContent_MakeAvailable(snappy)
 
 # -----------------------------------------------------------------------------
@@ -65,26 +67,46 @@ endif()
 # -----------------------------------------------------------------------------
 # Build addon library
 # -----------------------------------------------------------------------------
-add_library(${ADDON_NAME} STATIC
-    ${ADDON_SOURCES}
-    ${ADDON_HEADERS}
-    ${PLATFORM_SOURCES}
-    ${HAP_SOURCES}
-    ${HAP_HEADERS}
-)
+if(TRUSSC_BUILD_SHARED_AND_STATIC)
+    add_library(${ADDON_NAME} SHARED
+        ${ADDON_SOURCES}
+        ${ADDON_HEADERS}
+        ${PLATFORM_SOURCES}
+        ${HAP_SOURCES}
+        ${HAP_HEADERS}
+    )
+    add_library(${ADDON_NAME}_static STATIC
+        ${ADDON_SOURCES}
+        ${ADDON_HEADERS}
+        ${PLATFORM_SOURCES}
+        ${HAP_SOURCES}
+        ${HAP_HEADERS}
+    )
+    set(_ADDON_TARGETS ${ADDON_NAME} ${ADDON_NAME}_static)
+else()
+    add_library(${ADDON_NAME} STATIC
+        ${ADDON_SOURCES}
+        ${ADDON_HEADERS}
+        ${PLATFORM_SOURCES}
+        ${HAP_SOURCES}
+        ${HAP_HEADERS}
+    )
+    set(_ADDON_TARGETS ${ADDON_NAME})
+endif()
 
-target_include_directories(${ADDON_NAME} PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${hap_source_SOURCE_DIR}/source
-)
+foreach(_t IN LISTS _ADDON_TARGETS)
+    target_include_directories(${_t} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${hap_source_SOURCE_DIR}/source
+    )
 
-target_link_libraries(${ADDON_NAME} PUBLIC snappy TrussC)
-
-# Snappy requires C++ headers
-target_include_directories(${ADDON_NAME} PRIVATE
-    ${snappy_SOURCE_DIR}
-    ${snappy_BINARY_DIR}
-)
+    target_link_libraries(${_t} PUBLIC snappy TrussC)
+    # Snappy requires C++ headers
+    target_include_directories(${_t} PRIVATE
+        ${snappy_SOURCE_DIR}
+        ${snappy_BINARY_DIR}
+    )
+endforeach()
 
 # -----------------------------------------------------------------------------
 # Shader compilation with sokol-shdc

@@ -23,10 +23,18 @@ FetchContent_MakeAvailable(box2d)
 file(GLOB ADDON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 file(GLOB ADDON_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.h)
 
-add_library(${ADDON_NAME} STATIC ${ADDON_SOURCES} ${ADDON_HEADERS})
+if(TRUSSC_BUILD_SHARED_AND_STATIC)
+    add_library(${ADDON_NAME} SHARED ${ADDON_SOURCES} ${ADDON_HEADERS})
+    add_library(${ADDON_NAME}_static STATIC ${ADDON_SOURCES} ${ADDON_HEADERS})
+    set(_ADDON_TARGETS ${ADDON_NAME} ${ADDON_NAME}_static)
+else()
+    add_library(${ADDON_NAME} STATIC ${ADDON_SOURCES} ${ADDON_HEADERS})
+    set(_ADDON_TARGETS ${ADDON_NAME})
+endif()
 
-target_include_directories(${ADDON_NAME} PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-
-target_link_libraries(${ADDON_NAME} PUBLIC box2d TrussC)
+foreach(_t IN LISTS _ADDON_TARGETS)
+    target_include_directories(${_t} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(${_t} PUBLIC box2d TrussC)
+endforeach()
