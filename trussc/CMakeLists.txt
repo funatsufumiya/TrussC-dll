@@ -170,6 +170,8 @@ elseif(TC_PLATFORM_WINDOWS)
             mf
             mfplat
             mfuuid
+            # Winsock (required for networking on MinGW/MSYS2)
+            ws2_32
         )
         # MSVC: ソースファイルをUTF-8として扱う
         # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
