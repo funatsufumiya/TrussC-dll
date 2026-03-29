@@ -104,6 +104,15 @@ endif()
 
 add_library(tc::TrussC ALIAS TrussC)
 
+if(MSVC)
+    # Export all symbols from shared targets so DLLs expose functions for dynamic linking
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        set_target_properties(${_t} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+        # Link legacy stdio definitions to provide snprintf and related symbols on MSVC
+        target_link_libraries(${_t} PUBLIC legacy_stdio_definitions)
+    endforeach()
+endif()
+
 # インクルードパス
 foreach(_t IN LISTS _TRUSSC_TARGETS)
     target_include_directories(${_t} PUBLIC

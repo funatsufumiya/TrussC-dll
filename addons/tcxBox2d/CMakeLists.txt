@@ -37,4 +37,8 @@ foreach(_t IN LISTS _ADDON_TARGETS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     target_link_libraries(${_t} PUBLIC box2d TrussC)
+    if(MSVC)
+        set_target_properties(${_t} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+        target_link_libraries(${_t} PUBLIC legacy_stdio_definitions)
+    endif()
 endforeach()
