@@ -164,6 +164,43 @@ bool SoundBuffer::loadAac(const std::string& path) {
 bool SoundBuffer::loadAacFromMemory(const void* data, size_t dataSize) {
     EnsureMFStartup();
 
+// On MinGW/MSYS2 builds the helper MFCreateMFByteStreamOnStream may be
+// unavailable in the provided headers; fall back to writing the data to a
+// temporary file and decoding via the URL-based path.
+#if defined(__MINGW32__) || defined(__MINGW64__)
+    CHAR tempPath[MAX_PATH] = {0};
+    if (GetTempPathA(MAX_PATH, tempPath) == 0) {
+        printf("SoundBuffer: loadAacFromMemory failed to get temp path\n");
+        return false;
+    }
+
+    CHAR tmpName[MAX_PATH] = {0};
+    if (GetTempFileNameA(tempPath, "tcs", 0, tmpName) == 0) {
+        printf("SoundBuffer: loadAacFromMemory failed to create temp file\n");
+        return false;
+    }
+
+    HANDLE hFile = CreateFileA(tmpName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("SoundBuffer: loadAacFromMemory failed to open temp file\n");
+        DeleteFileA(tmpName);
+        return false;
+    }
+
+    DWORD written = 0;
+    BOOL ok = WriteFile(hFile, data, (DWORD)dataSize, &written, NULL);
+    CloseHandle(hFile);
+
+    if (!ok || written != (DWORD)dataSize) {
+        printf("SoundBuffer: loadAacFromMemory failed to write temp file\n");
+        DeleteFileA(tmpName);
+        return false;
+    }
+
+    bool result = loadAac(std::string(tmpName));
+    DeleteFileA(tmpName);
+    return result;
+#else
     IStream* pStream = SHCreateMemStream((const BYTE*)data, (UINT)dataSize);
     if (!pStream) {
         printf("SoundBuffer: loadAacFromMemory failed to create stream\n");
@@ -190,6 +227,7 @@ bool SoundBuffer::loadAacFromMemory(const void* data, size_t dataSize) {
 
     bool result = ReadFromSourceReader(pReader, this);
     SafeRelease(&pReader);
+#endif
 
     if (result) {
         printf("SoundBuffer: decoded AAC from memory (%d ch, %d Hz, %zu samples)\n",
