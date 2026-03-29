@@ -1,3 +1,9 @@
+# TrussC-dll
+
+This branch has experiments to export dll from TrussC, including addons, in order to use them from other dynamic (scripting) language etc.
+
+-----
+
 # TrussC
 
 [![Build](https://github.com/TrussC-org/TrussC/actions/workflows/build.yml/badge.svg)](https://github.com/TrussC-org/TrussC/actions/workflows/build.yml)
