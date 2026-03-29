@@ -72,7 +72,8 @@ inline std::string getDataPath(const std::string& filename) {
         return internal::dataPathRoot + filename;
     } else {
         // Relative path: resolve relative to executable directory
-        return platform::getExecutableDir() + internal::dataPathRoot + filename;
+        const char* exeDir = trussc_platform_getExecutableDir();
+        return std::string(exeDir ? exeDir : "") + internal::dataPathRoot + filename;
     }
 }
 

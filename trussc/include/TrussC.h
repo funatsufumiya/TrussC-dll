@@ -40,6 +40,9 @@
 // Headless mode state (must be included early for graphics skip checks)
 #include "tc/app/tcHeadlessState.h"
 
+// C wrapper exports for stable ABI
+#include "tc/platform/c_exports.h"
+
 // Platform-specific headers for memory usage
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -344,7 +347,7 @@ inline void beginFrame() {
 
     // Auto-resize sokol_gl buffers if overflow was detected last frame
     if (internal::sglPendingResize > 0) {
-        internal::resizeSgl(internal::sglPendingResize, std::max(16384, internal::sglPendingResize / 4));
+        trussc_internal_resizeSgl(internal::sglPendingResize, std::max(16384, internal::sglPendingResize / 4));
     }
 
     // Setup screen with default FOV (60 = perspective, 0 = ortho)
@@ -1446,10 +1449,10 @@ inline void setWindowSize(int width, int height) {
     if (internal::pixelPerfectMode) {
         // Pixel perfect mode: convert framebuffer size to logical size
         float scale = sapp_dpi_scale();
-        platform::setWindowSize(static_cast<int>(width / scale), static_cast<int>(height / scale));
+        trussc_platform_setWindowSize(static_cast<int>(width / scale), static_cast<int>(height / scale));
     } else {
         // Logical coordinate mode: as is
-        platform::setWindowSize(width, height);
+        trussc_platform_setWindowSize(width, height);
     }
 }
 
@@ -1759,14 +1762,16 @@ inline void exitApp() {
 inline bool saveScreenshot(const std::filesystem::path& path) {
     // Convert relative paths to data path
     if (path.is_relative()) {
-        return platform::saveScreenshot(getDataPath(path.string()));
+        std::string p = getDataPath(path.string());
+        return trussc_platform_saveScreenshot(p.c_str()) != 0;
     }
-    return platform::saveScreenshot(path);
+    std::string p = path.string();
+    return trussc_platform_saveScreenshot(p.c_str()) != 0;
 }
 
 // Capture screen to Pixels
 inline bool grabScreen(Pixels& outPixels) {
-    return platform::captureWindow(outPixels);
+    return trussc_platform_captureWindow(&outPixels) != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1910,7 +1915,7 @@ namespace mcp {
 namespace internal {
 
     inline void _setup_cb() {
-        setup();
+        trussc_setup();
 
         // For macOS bundles, set default data path
         // Executable: bin/xxx.app/Contents/MacOS/xxx
@@ -2066,7 +2071,7 @@ namespace internal {
         console::stop();
 
         if (appCleanupFunc) appCleanupFunc();
-        cleanup();
+        trussc_cleanup();
     }
 
     inline void _event_cb(const sapp_event* ev) {
@@ -2318,7 +2323,7 @@ int runApp(const WindowSettings& settings = WindowSettings()) {
     if (settings.pixelPerfect) {
         // For pixel perfect, treat specified size as framebuffer size
         // and convert to logical window size
-        float displayScale = platform::getDisplayScaleFactor();
+        float displayScale = trussc_platform_getDisplayScaleFactor();
         desc.width = static_cast<int>(settings.width / displayScale);
         desc.height = static_cast<int>(settings.height / displayScale);
     } else {

@@ -89,6 +89,9 @@ set(TC_ALL_SOURCES
     ${TC_PLATFORM_SOURCES}
 )
 
+# Add C wrapper source (explicitly) so it's always compiled into TrussC
+list(APPEND TC_ALL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/c_exports.cpp)
+
 # Xcode / Visual Studio でディレクトリ構造を維持
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TC_ALL_SOURCES})
 
@@ -103,6 +106,13 @@ else()
 endif()
 
 add_library(tc::TrussC ALIAS TrussC)
+
+# Define TRUSSC_EXPORTS while building the TrussC targets so headers
+# can emit proper export attributes on platforms (e.g., __declspec(dllexport)
+# on Windows or visibility("default") on macOS/Linux).
+foreach(_t IN LISTS _TRUSSC_TARGETS)
+    target_compile_definitions(${_t} PRIVATE TRUSSC_EXPORTS)
+endforeach()
 
 if(MSVC)
     # Export all symbols from shared targets so DLLs expose functions for dynamic linking
