@@ -101,9 +101,17 @@ macro(_tc_auto_addon ADDON_NAME ADDON_PATH)
 
     # ソースがない場合はヘッダオンリーライブラリとして作成
     if(_ADDON_SOURCES)
-        add_library(${ADDON_NAME} STATIC ${_ADDON_SOURCES})
+        if(TRUSSC_BUILD_SHARED_AND_STATIC)
+            add_library(${ADDON_NAME} SHARED ${_ADDON_SOURCES})
+            add_library(${ADDON_NAME}_static STATIC ${_ADDON_SOURCES})
+            set(_ADDON_TARGETS ${ADDON_NAME} ${ADDON_NAME}_static)
+        else()
+            add_library(${ADDON_NAME} STATIC ${_ADDON_SOURCES})
+            set(_ADDON_TARGETS ${ADDON_NAME})
+        endif()
     else()
         add_library(${ADDON_NAME} INTERFACE)
+        set(_ADDON_TARGETS ${ADDON_NAME})
     endif()
 
     # インクルードパスを設定
@@ -136,8 +144,10 @@ macro(_tc_auto_addon ADDON_NAME ADDON_PATH)
 
     # インクルードパスを適用
     if(_ADDON_SOURCES)
-        target_include_directories(${ADDON_NAME} PUBLIC ${_ADDON_INCLUDE_DIRS})
-        target_link_libraries(${ADDON_NAME} PUBLIC TrussC)
+        foreach(_t IN LISTS _ADDON_TARGETS)
+            target_include_directories(${_t} PUBLIC ${_ADDON_INCLUDE_DIRS})
+            target_link_libraries(${_t} PUBLIC TrussC)
+        endforeach()
     else()
         target_include_directories(${ADDON_NAME} INTERFACE ${_ADDON_INCLUDE_DIRS})
     endif()

@@ -102,6 +102,9 @@ macro(trussc_app)
     # (hidden in Release, shown in Debug or when TRUSSC_SHOW_CONSOLE is defined)
     add_executable(${PROJECT_NAME} ${_TC_SOURCES})
 
+    # Mark this target as an application so TrussC.h can apply app-only linker pragmas
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TRUSSC_APP)
+
     # Link TrussC
     target_link_libraries(${PROJECT_NAME} PRIVATE tc::TrussC)
 

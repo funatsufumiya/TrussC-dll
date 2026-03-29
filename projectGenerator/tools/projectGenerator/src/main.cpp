@@ -258,7 +258,7 @@ int main(int argc, char* argv[]) {
     }
 
     WindowSettings settings;
-    settings.title = "TrussC Project Generator";
+    settings.title = "TrussC-dll Project Generator";
     settings.width = 500;
     settings.height = 560;
     return runApp<tcApp>(settings);

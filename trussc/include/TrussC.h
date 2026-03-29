@@ -7,7 +7,11 @@
 
 // Windows: Hide console window (in Release builds)
 // Define TRUSSC_SHOW_CONSOLE to always show console
-#if defined(_WIN32) && !defined(_DEBUG) && !defined(TRUSSC_SHOW_CONSOLE)
+// This pragma should only be applied for application targets. Libraries/DLLs
+// must not set the subsystem/entry point — otherwise the linker looks for
+// `main` and causes unresolved external symbol errors when building DLLs.
+// Define TRUSSC_APP in application CMake targets to enable this.
+#if defined(_WIN32) && !defined(_DEBUG) && !defined(TRUSSC_SHOW_CONSOLE) && defined(TRUSSC_APP)
 #pragma comment(linker, "/subsystem:\"windows\" /entry:\"mainCRTStartup\"")
 #endif
 

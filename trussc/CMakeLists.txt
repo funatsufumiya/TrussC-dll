@@ -14,6 +14,9 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Option: produce both shared (DLL) and static (.lib) versions when enabled
+option(TRUSSC_BUILD_SHARED_AND_STATIC "Build both shared (DLL) and static (.lib) TrussC targets (Windows)" ON)
+
 # TC_ROOT（trussc と addons を含むルートディレクトリ）
 get_filename_component(TC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(TC_ROOT "${TC_ROOT}" CACHE PATH "TrussC root directory" FORCE)
@@ -89,67 +92,85 @@ set(TC_ALL_SOURCES
 # Xcode / Visual Studio でディレクトリ構造を維持
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TC_ALL_SOURCES})
 
-add_library(TrussC STATIC ${TC_ALL_SOURCES})
+# Create TrussC targets. If requested, create both SHARED and STATIC
+if(TRUSSC_BUILD_SHARED_AND_STATIC)
+    add_library(TrussC SHARED ${TC_ALL_SOURCES})
+    add_library(TrussC_static STATIC ${TC_ALL_SOURCES})
+    set(_TRUSSC_TARGETS TrussC TrussC_static)
+else()
+    add_library(TrussC STATIC ${TC_ALL_SOURCES})
+    set(_TRUSSC_TARGETS TrussC)
+endif()
 
 add_library(tc::TrussC ALIAS TrussC)
 
 # インクルードパス
-target_include_directories(TrussC PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/sokol
-)
+foreach(_t IN LISTS _TRUSSC_TARGETS)
+    target_include_directories(${_t} PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/sokol
+    )
+endforeach()
 
 # =============================================================================
 # プラットフォーム固有の設定
 # =============================================================================
 if(TC_PLATFORM_EMSCRIPTEN)
-    target_compile_definitions(TrussC PUBLIC SOKOL_WGPU)
-    # WebGPU port for headers (emdawnwebgpu provides webgpu/webgpu.h)
-    target_compile_options(TrussC PUBLIC --use-port=emdawnwebgpu)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_WGPU)
+        # WebGPU port for headers (emdawnwebgpu provides webgpu/webgpu.h)
+        target_compile_options(${_t} PUBLIC --use-port=emdawnwebgpu)
+    endforeach()
     # Emscripten リンクオプションはアプリ側で設定（trussc_app.cmake）
 
 elseif(TC_PLATFORM_MACOS)
-    target_compile_definitions(TrussC PUBLIC SOKOL_METAL)
-    target_link_libraries(TrussC PUBLIC
-        "-framework Metal"
-        "-framework MetalKit"
-        "-framework Cocoa"
-        "-framework ImageIO"
-        "-framework QuartzCore"
-        "-framework AudioToolbox"
-        "-framework AVFoundation"
-        "-framework CoreMedia"
-        "-framework CoreVideo"
-    )
-    target_compile_options(TrussC PRIVATE -fobjc-arc)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_METAL)
+        target_link_libraries(${_t} PUBLIC
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework Cocoa"
+            "-framework ImageIO"
+            "-framework QuartzCore"
+            "-framework AudioToolbox"
+            "-framework AVFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+        )
+        target_compile_options(${_t} PRIVATE -fobjc-arc)
+    endforeach()
 
 elseif(TC_PLATFORM_WINDOWS)
     # WIN32_LEAN_AND_MEAN: windows.h の読み込みを軽量化
     # NOMINMAX: std::min / std::max との衝突を回避
-    target_compile_definitions(TrussC PUBLIC
-        SOKOL_D3D11
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        _USE_MATH_DEFINES
-    )
-    target_link_libraries(TrussC PUBLIC
-        d3d11
-        dxgi
-        dxguid
-        comdlg32
-        shell32
-        ole32
-        # Media Foundation (VideoPlayer)
-        mf
-        mfplat
-        mfuuid
-    )
-    # MSVC: ソースファイルをUTF-8として扱う
-    # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
-    target_compile_options(TrussC PUBLIC /utf-8 /wd4244 /wd4267)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC
+            SOKOL_D3D11
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            _USE_MATH_DEFINES
+        )
+        target_link_libraries(${_t} PUBLIC
+            d3d11
+            dxgi
+            dxguid
+            comdlg32
+            shell32
+            ole32
+            # Media Foundation (VideoPlayer)
+            mf
+            mfplat
+            mfuuid
+        )
+        # MSVC: ソースファイルをUTF-8として扱う
+        # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
+        target_compile_options(${_t} PUBLIC /utf-8 /wd4244 /wd4267)
+    endforeach()
 
 elseif(TC_PLATFORM_LINUX)
-    target_compile_definitions(TrussC PUBLIC SOKOL_GLCORE)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_GLCORE)
+    endforeach()
     find_package(X11 REQUIRED)
     find_package(OpenGL REQUIRED)
     find_package(PkgConfig REQUIRED)
@@ -158,32 +179,36 @@ elseif(TC_PLATFORM_LINUX)
     pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libswscale libavutil)
     # GStreamer for AAC audio decoding
     pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0)
-    target_include_directories(TrussC PUBLIC
-        ${GTK3_INCLUDE_DIRS}
-        ${FFMPEG_INCLUDE_DIRS}
-        ${GSTREAMER_INCLUDE_DIRS}
-    )
-    target_link_libraries(TrussC PUBLIC
-        ${X11_LIBRARIES}
-        ${X11_Xi_LIB}
-        ${X11_Xcursor_LIB}
-        ${OPENGL_LIBRARIES}
-        ${GTK3_LIBRARIES}
-        ${FFMPEG_LIBRARIES}
-        ${GSTREAMER_LIBRARIES}
-        pthread
-        dl
-    )
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_include_directories(${_t} PUBLIC
+            ${GTK3_INCLUDE_DIRS}
+            ${FFMPEG_INCLUDE_DIRS}
+            ${GSTREAMER_INCLUDE_DIRS}
+        )
+        target_link_libraries(${_t} PUBLIC
+            ${X11_LIBRARIES}
+            ${X11_Xi_LIB}
+            ${X11_Xcursor_LIB}
+            ${OPENGL_LIBRARIES}
+            ${GTK3_LIBRARIES}
+            ${FFMPEG_LIBRARIES}
+            ${GSTREAMER_LIBRARIES}
+            pthread
+            dl
+        )
+    endforeach()
 
 elseif(TC_PLATFORM_RASPBIAN)
-    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
-    target_include_directories(TrussC PUBLIC /opt/vc/include)
-    target_link_libraries(TrussC PUBLIC
-        GLESv2
-        EGL
-        bcm_host
-        pthread
-    )
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
+        target_include_directories(${_t} PUBLIC /opt/vc/include)
+        target_link_libraries(${_t} PUBLIC
+            GLESv2
+            EGL
+            bcm_host
+            pthread
+        )
+    endforeach()
 endif()
 
 # =============================================================================
