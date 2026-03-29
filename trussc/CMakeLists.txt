@@ -173,7 +173,9 @@ elseif(TC_PLATFORM_WINDOWS)
         )
         # MSVC: ソースファイルをUTF-8として扱う
         # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
-        target_compile_options(${_t} PUBLIC /utf-8 /wd4244 /wd4267)
+        if(MSVC)
+            target_compile_options(${_t} PUBLIC /utf-8 /wd4244 /wd4267)
+        endif()
     endforeach()
 
 elseif(TC_PLATFORM_LINUX)
