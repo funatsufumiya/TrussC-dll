@@ -2,6 +2,16 @@
 
 This branch has experiments to export dll from TrussC, including addons, in order to use them from other dynamic (scripting) language etc.
 
+## macOS Xcode Limitation
+
+On macOS, the same source code cannot be shared between static lib project and dynamic lib project.
+So please use `CMake only` in projectGenerator, and try below:
+
+```bash
+$ cmake -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+$ cmake --build build --parallel 8 -j 8 --config Release
+```
+
 -----
 
 # TrussC
