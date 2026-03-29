@@ -168,10 +168,12 @@ elseif(TC_PLATFORM_WINDOWS)
             ole32
             # Media Foundation (VideoPlayer)
             mf
+            mfreadwrite
             mfplat
             mfuuid
             # Winsock (required for networking on MinGW/MSYS2)
             ws2_32
+            shlwapi
         )
         # MSVC: ソースファイルをUTF-8として扱う
         # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
