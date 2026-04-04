@@ -43,7 +43,7 @@ fi
 # Build
 echo ""
 echo "Building..."
-cmake --build . --parallel
+cmake --build . --parallel 8 -j 8
 if [ $? -ne 0 ]; then
     echo ""
     echo "ERROR: Build failed!"
