@@ -1477,10 +1477,10 @@ inline void setWindowSize(int width, int height) {
     if (internal::pixelPerfectMode) {
         // Pixel perfect mode: convert framebuffer size to logical size
         float scale = sapp_dpi_scale();
-        setWindowSizeLogical(static_cast<int>(width / scale), static_cast<int>(height / scale));
+        trussc_platform_setWindowSize(static_cast<int>(width / scale), static_cast<int>(height / scale));
     } else {
         // Logical coordinate mode: as is
-        setWindowSizeLogical(width, height);
+        trussc_platform_setWindowSize(width, height);
     }
 }
 
@@ -2022,7 +2022,7 @@ namespace internal {
         #endif
 
         // Bring window to front on startup
-        bringWindowToFront();
+        trussc_platform_bringWindowToFront();
 
         if (appSetupFunc) appSetupFunc();
 

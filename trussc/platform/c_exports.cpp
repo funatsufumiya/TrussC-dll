@@ -16,13 +16,15 @@ extern "C" {
     }
 
     int trussc_platform_saveScreenshot(const char* path) {
-        if (!path) return 0;
-        try {
-            bool ok = trussc::saveScreenshot(std::filesystem::path(path));
-            return ok ? 1 : 0;
-        } catch (...) {
-            return 0;
-        }
+        return trussc::saveScreenshot(std::filesystem::path(path));
+    }
+
+    void trussc_platform_bringWindowToFront(){
+        trussc::bringWindowToFront();
+    }
+
+    void trussc_platform_setWindowSize(int width, int height){
+        trussc::setWindowSizeLogical(width, height);
     }
 
     int trussc_platform_captureWindow(void* outPixels) {

@@ -6,6 +6,7 @@
 
 #include "tcMCP.h"
 #include "tcUtils.h"
+#include "../platform/c_exports.h"
 #include "../events/tcCoreEvents.h"
 #include "stb/stb_image_write.h"
 #include "../graphics/tcPixels.h"
@@ -58,7 +59,7 @@ inline void registerInspectionTools() {
     tool("save_screenshot", "Save screenshot to file")
         .arg<std::string>("path", "File path")
         .bind<std::string>([](std::string path) {
-            if (trussc::saveScreenshot(path)) {
+            if (trussc_platform_saveScreenshot(path.c_str())) {
                 return json{{"status", "ok"}, {"path", path}};
             } else {
                 return json{{"status", "error"}, {"message", "Failed to save screenshot"}};
