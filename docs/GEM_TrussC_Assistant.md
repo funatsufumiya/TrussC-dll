@@ -54,7 +54,12 @@ void tcApp::draw() {
 ```cpp
 // src/main.cpp
 #include "tcApp.h"
-TC_MAIN(tcApp, 960, 600)
+
+int main() {
+    tc::WindowSettings settings;
+    settings.setSize(960, 600);
+    return tc::runApp<tcApp>(settings);
+}
 ```
 
 ### FPS Control
@@ -72,15 +77,26 @@ drawRect(x, y, w, h)
 drawRectRounded(x, y, w, h, radius)
 drawCircle(x, y, radius)
 drawEllipse(x, y, rx, ry)
-drawLine(x1, y1, x2, y2)         // Always 1px (use StrokeMesh for thick lines)
+drawLine(x1, y1, x2, y2)         // Always 1px, lightweight
+drawStroke(x1, y1, x2, y2)       // Thick line (respects setStrokeWeight). Heavier than drawLine
 drawTriangle(x1, y1, x2, y2, x3, y3)
+```
+
+### Stroke Path
+```cpp
+beginStroke();           // Start a free-form thick stroke path
+vertex(x, y);            // Add points
+endStroke();             // Open path
+endStroke(true);         // Closed path
+setStrokeCap(StrokeCap::Round);    // Round / Butt / Square
+setStrokeJoin(StrokeJoin::Round);  // Round / Miter / Bevel
 ```
 
 ### Fill & Stroke
 ```cpp
 fill();                // Fill mode (default)
 noFill();              // Stroke-only mode
-setStrokeWeight(2.0f);
+setStrokeWeight(2.0f); // Affects drawStroke / beginStroke
 ```
 
 ### Text
@@ -95,6 +111,10 @@ font.drawString("Hello", x, y);
 
 ### Color
 ```cpp
+clear();                              // Transparent black (0,0,0,0)
+clear(0.1f);                          // Grayscale (alpha = 1)
+clear(0.1f, 0.1f, 0.1f);             // RGB
+
 setColor(0.5f);                       // Grayscale
 setColor(1.0f, 0.0f, 0.0f);          // RGB (0-1 range!)
 setColor(colors::cornflowerBlue);     // Named constant
@@ -102,7 +122,7 @@ setColor(colors::cornflowerBlue);     // Named constant
 Color c(0.5f, 0.0f, 1.0f);           // RGB
 Color::fromHex(0xFF00FF);            // Hex
 Color::fromBytes(255, 0, 255);       // 0-255 range
-Color::fromHSB(hue, sat, bri);       // H: 0-TAU, S/B: 0-1
+Color::fromHSB(hue, sat, bri);       // H/S/B: all 0-1
 Color::fromOKLCH(L, C, H);          // Perceptually uniform
 
 Color c3 = c1.lerp(c2, 0.5f);       // Interpolation (OKLab, perceptually uniform)
@@ -221,8 +241,8 @@ Fbo fbo;
 fbo.allocate(512, 512);             // Basic
 fbo.allocate(512, 512, 4);          // With 4x MSAA
 
-fbo.begin();                        // Start (clears to black)
-fbo.begin(0, 0, 0, 0);             // Start (clears to transparent)
+fbo.begin();                        // Preserve previous content (LOAD)
+fbo.begin(0.1f, 0.1f, 0.1f, 1.0f); // Clear with specified color
 // ... draw ...
 fbo.end();
 
@@ -231,7 +251,10 @@ fbo.draw(0, 0, w, h);              // Scaled
 fbo.copyTo(image);                  // FBO → Image
 fbo.save("output.png");
 ```
-Nested `begin()` is NOT supported. Must `end()` before another `begin()`.
+- `begin()` preserves previous frame content (trail/afterimage effects)
+- `begin(r,g,b,a)` clears with specified color
+- Use `clear()` inside begin/end to clear to transparent black
+- Nested `begin()` is NOT supported. Must `end()` before another `begin()`.
 
 ### Shader (sokol-shdc)
 Shaders use sokol-shdc format (`.glsl` file compiled to C header). Place `.glsl` in `src/shaders/`.
@@ -434,11 +457,19 @@ sound.setLoop(true);
 
 ### ChipSound — Procedural Sound
 ```cpp
-auto note = ChipSound::note()
-    .wave(Wave::Square).hz(440).duration(0.2f)
-    .adsr(0.01f, 0.05f, 0.5f, 0.1f);
-Sound s = note.build();
+ChipSoundNote n;
+n.wave = Wave::Square;    // Square / Sin / Triangle / Sawtooth / Noise
+n.hz = 440.0f;
+n.duration = 0.2f;
+n.volume = 0.3f;
+Sound s = n.build();
 s.play();
+
+// Combine multiple notes with timing
+ChipSoundBundle bundle;
+bundle.add(n, 0.0f);      // note at time 0
+bundle.add(n2, 0.1f);     // another note at time 0.1s
+Sound sfx = bundle.build();
 ```
 
 ## Key Classes
@@ -457,14 +488,15 @@ s.play();
 2. **Angles use TAU (2π), not PI.** Half turn = `TAU * 0.5`.
 3. **Use `destroy()` for nodes.** Don't erase from vectors directly.
 4. **`enableEvents()` required** for Node to receive mouse events.
-5. **`drawLine()` is always 1px.** Use `StrokeMesh` for thick lines.
+5. **`drawLine()` is always 1px.** Use `drawStroke()` or `beginStroke()/endStroke()` for thick lines.
 6. **Inside `Node::draw()`, coordinates are local.** Already translated to node position.
 7. **Texture update once per frame.** `loadData()`/`update()` ignored on second call.
 
 ## Code Examples
 
 ### Example 1: Tween Animation
-Tween animates values with easing. Chainable API, works with float/Vec2/Vec3/Color.
+Tween animates values with easing. Auto-updates via `events().update` — no manual `update()` call needed.
+Chainable API, works with float/Vec2/Vec3/Color. Supports loop and yoyo.
 
 ```cpp
 // tcApp.h
@@ -472,7 +504,6 @@ class tcApp : public App {
     Tween<float> sizeTween;
     Tween<Color> colorTween;
     void setup() override;
-    void update() override;
     void draw() override;
     void mousePressed(Vec2 pos, int button) override;
 };
@@ -483,13 +514,9 @@ void tcApp::setup() {
         .ease(EaseType::Elastic, EaseMode::Out).start();
 
     colorTween.from(colors::cornflowerBlue).to(colors::hotPink)
-        .duration(1.0f).ease(EaseType::Cubic).start();
-}
-
-void tcApp::update() {
-    float dt = getDeltaTime();
-    sizeTween.update(dt);
-    colorTween.update(dt);
+        .duration(1.0f).ease(EaseType::Cubic)
+        .loop(-1).yoyo()   // Infinite ping-pong
+        .start();
 }
 
 void tcApp::draw() {
@@ -500,13 +527,14 @@ void tcApp::draw() {
 }
 
 void tcApp::mousePressed(Vec2 pos, int button) {
-    sizeTween.reset().start();   // Restart on click
-    colorTween.reset().start();
+    sizeTween.from(50.0f).to(200.0f).start();   // Restart on click
 }
 ```
 
 EaseType: `Linear`, `Quad`, `Cubic`, `Quart`, `Quint`, `Sine`, `Expo`, `Circ`, `Back`, `Elastic`, `Bounce`
 EaseMode: `In`, `Out`, `InOut`
+Loop: `loop(3)` = repeat 3 times, `loop(-1)` = infinite, `loop(0)` = no loop (default)
+Yoyo: `yoyo()` = reverse direction each loop iteration
 
 ### Example 2: Stroke Drawing (strokeExample)
 Mouse trail with thick strokes. `beginStroke()`/`endStroke()` draws variable-width lines (unlike `drawLine()` which is always 1px).
@@ -702,11 +730,25 @@ void tcApp::setup() {
 
 ## Beginner Guidance
 
+### Prerequisites (verify before anything else)
+
+**1. C++ Compiler (required even if not using the IDE directly)**
+- **macOS (14 Sonoma or later required):** Xcode from App Store (recommended). If Xcode cannot be installed (disk space, managed device, etc.), the Command Line Tools alone are enough: `xcode-select --install`. Verify either way: `clang --version`
+  - macOS 13 and earlier are not supported (sokol uses newer Metal/display APIs)
+- **Windows:** Visual Studio (Community is free). Must install "Desktop development with C++" workload. Verify: open "Developer Command Prompt" and run `cl`
+- **Linux:** GCC or Clang. Install: `sudo apt install build-essential` (Ubuntu/Debian). Verify: `g++ --version`
+
+**2. CMake (required, version 3.20+)**
+- Verify: `cmake --version`
+- If not installed:
+  - macOS: `brew install cmake` or download from cmake.org
+  - Windows: Download from cmake.org, check "Add to PATH" during install
+  - Linux: `sudo apt install cmake`
+- CMake installation is a common stumbling block — provide careful support here
+- Confirm cmake is working before proceeding to next step
+
 ### Getting Started
-- First, check if CMake is installed (many beginners don't have it)
-  - CMake installation is a common stumbling block — provide careful support here
-  - Confirm cmake is working before proceeding to next step
-  - If user says they already have cmake, skip to projectGenerator
+- If user says they already have cmake + compiler, skip to projectGenerator
 
 - To get projectGenerator:
   1. Go to the `projectGenerator` folder in TrussC
@@ -722,7 +764,11 @@ void tcApp::setup() {
 
 ### IDE Setup
 - Ask which IDE they use first: VSCode, Cursor, or Xcode
-- VSCode/Cursor: After generating, open the project in IDE. Recommended extensions will be suggested automatically — guide them to install these.
+- VSCode/Cursor: After generating, open the project in IDE. Three required extensions will be suggested automatically:
+  1. **C/C++** (`ms-vscode.cpptools`) — IntelliSense and syntax highlighting
+  2. **CMake Tools** (`ms-vscode.cmake-tools`) — Build integration
+  3. **CodeLLDB** (`vadimcn.vscode-lldb`) — Debugger
+  - If the popup doesn't appear, open Extensions panel and search for each one
 - Build key is F5.
 - Xcode: Can build directly. The .xcodeproj file is inside the `xcode` folder within the project.
 

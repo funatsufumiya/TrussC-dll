@@ -135,12 +135,14 @@ categories:
       - name: clear
         return: "void"
         signatures:
+          - params: ""
+            params_simple: ""
           - params: "float gray"
             params_simple: "gray"
           - params: "float r, float g, float b"
             params_simple: "r, g, b"
-        description: "Clear screen"
-        description_ja: "画面をクリア"
+        description: "Clear screen. No args = transparent black (0,0,0,0)"
+        description_ja: "画面をクリア。引数なし = 透明黒 (0,0,0,0)"
         of_equivalent: "ofClear / ofBackground"
         sketch: true
         snippet: "clear(${1:0.0})"
@@ -1218,6 +1220,40 @@ categories:
         snippet: "getFrameCount()"
 
   # ==========================================================================
+  # Memory
+  # ==========================================================================
+  - id: memory
+    name: "Memory"
+    name_ja: "メモリ"
+    functions:
+      - name: getSokolMemoryBytes
+        return: "int"
+        signatures:
+          - params: ""
+        description: "Total bytes allocated by sokol libraries"
+        description_ja: "sokolライブラリの総メモリ使用量（バイト）"
+        sketch: true
+        snippet: "getSokolMemoryBytes()"
+
+      - name: getSokolMemoryAllocs
+        return: "int"
+        signatures:
+          - params: ""
+        description: "Number of active allocations in sokol libraries"
+        description_ja: "sokolライブラリのアクティブなアロケーション数"
+        sketch: true
+        snippet: "getSokolMemoryAllocs()"
+
+      - name: releaseSglBuffers
+        return: "void"
+        signatures:
+          - params: ""
+        description: "Release sokol_gl vertex/command buffers (auto re-allocated on next draw)"
+        description_ja: "sokol_glのバッファを解放（次の描画時に自動再確保）"
+        sketch: true
+        snippet: "releaseSglBuffers()"
+
+  # ==========================================================================
   # Time - Elapsed
   # ==========================================================================
   - id: time_elapsed
@@ -1509,17 +1545,6 @@ categories:
     name: "Math - Interpolation"
     name_ja: "数学 - 補間"
     functions:
-      - name: lerp
-        return: "float"
-        signatures:
-          - params: "float a, float b, float t"
-            params_simple: "a, b, t"
-        description: "Linear interpolation"
-        description_ja: "線形補間"
-        of_equivalent: "ofLerp"
-        sketch: true
-        snippet: "lerp(${1:a}, ${2:b}, ${3:t})"
-
       - name: clamp
         return: "float"
         signatures:
@@ -2711,15 +2736,25 @@ categories:
         sketch: true
         snippet: "finish()"
 
-      - name: update
-        return: "void"
+      - name: loop
+        return: "Tween@"
         signatures:
-          - params: "float dt"
-            params_simple: "dt"
-        description: "Update animation"
-        description_ja: "更新"
+          - params: "int count = -1"
+            params_simple: "count"
+        description: "Set loop count (-1=infinite, 0=none, N=repeat N times)"
+        description_ja: "ループ回数を設定 (-1=無限, 0=なし, N=N回繰り返し)"
         sketch: true
-        snippet: "update(getDeltaTime())"
+        snippet: "loop(${1:-1})"
+
+      - name: yoyo
+        return: "Tween@"
+        signatures:
+          - params: "bool enable = true"
+            params_simple: "enable"
+        description: "Enable yoyo (reverse direction each loop)"
+        description_ja: "ヨーヨー（ループごとに方向反転）を有効化"
+        sketch: true
+        snippet: "yoyo()"
 
       - name: getValue
         return: "float"
@@ -2800,6 +2835,16 @@ categories:
         description_ja: "終了値を取得"
         sketch: true
         snippet: "getEnd()"
+
+      - name: getLoopCount
+        return: "int"
+        signatures:
+          - params: ""
+            params_simple: ""
+        description: "Get number of completed loop iterations"
+        description_ja: "完了したループ回数を取得"
+        sketch: true
+        snippet: "getLoopCount()"
 
   # ==========================================================================
   # Types - Vec2
@@ -4056,8 +4101,10 @@ categories:
         signatures:
           - params: ""
             params_simple: ""
-        description: "Begin drawing to FBO"
-        description_ja: "FBOへの描画を開始"
+          - params: "float r, float g, float b, float a = 1.0"
+            params_simple: "r, g, b, a"
+        description: "Begin drawing to FBO. No args = preserve previous content. With args = clear with specified color"
+        description_ja: "FBOへの描画を開始。引数なし = 前の内容を保持。引数あり = 指定色でクリア"
         sketch: true
         snippet: "begin()"
 
@@ -6952,6 +6999,38 @@ types:
         description: "Get font size"
         description_ja: "フォントサイズを取得"
         snippet: "getSize()"
+      - name: clearAtlas
+        return: void
+        signatures:
+          - params: ""
+        description: "Clear font atlas (GPU memory freed, glyphs re-rasterized on next draw)"
+        description_ja: "フォントアトラスをクリア（GPU解放、次の描画時に再ラスタライズ）"
+        sketch: true
+        snippet: "clearAtlas()"
+      - name: getMemoryUsage
+        return: size_t
+        signatures:
+          - params: ""
+        description: "Get atlas memory usage in bytes"
+        description_ja: "アトラスのメモリ使用量（バイト）を取得"
+        sketch: true
+        snippet: "getMemoryUsage()"
+      - name: getLoadedGlyphCount
+        return: size_t
+        signatures:
+          - params: ""
+        description: "Get number of loaded glyphs"
+        description_ja: "読み込み済みグリフ数を取得"
+        sketch: true
+        snippet: "getLoadedGlyphCount()"
+      - name: getAtlasCount
+        return: size_t
+        signatures:
+          - params: ""
+        description: "Get number of atlas pages"
+        description_ja: "アトラスページ数を取得"
+        sketch: true
+        snippet: "getAtlasCount()"
 
   - name: FileWriter
     description: "Streaming file writer with immediate flush"

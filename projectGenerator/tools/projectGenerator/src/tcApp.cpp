@@ -10,6 +10,23 @@
 
 namespace fs = std::filesystem;
 
+// Check if an environment variable is set, even in GUI apps on macOS
+// (GUI apps don't inherit .zshrc env vars, so we ask a login shell)
+static bool hasEnvVar(const string& name) {
+    if (getenv(name.c_str())) return true;
+#ifdef __APPLE__
+    string cmd = "/bin/zsh -c 'source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; printenv " + name + "' 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+    char buf[16];
+    bool found = fgets(buf, sizeof(buf), pipe) != nullptr;
+    pclose(pipe);
+    return found;
+#else
+    return false;
+#endif
+}
+
 void tcApp::setup() {
     imguiSetup();
 
@@ -24,7 +41,7 @@ void tcApp::setup() {
     loadConfig();
 
     // Validate TC_ROOT - clear if invalid (triggers auto-detection)
-    if (!tcRoot.empty() && !fs::exists(tcRoot + "/trussc/CMakeLists.txt")) {
+    if (!tcRoot.empty() && !fs::exists(tcRoot + "/trussc/cmake/trussc_app.cmake")) {
         logNotice("tcApp") << "TC_ROOT is invalid, clearing: " << tcRoot;
         tcRoot.clear();
         tcRootBuf[0] = '\0';
@@ -33,7 +50,7 @@ void tcApp::setup() {
     // Auto-detect TC_ROOT if not set
     // Search up to 5 parent directories from executable location
     if (tcRoot.empty()) {
-        fs::path exePath = platform::getExecutablePath();
+        fs::path exePath = getExecutablePath();
         fs::path searchPath = exePath.parent_path();
 
         // On macOS, executable is in .app/Contents/MacOS/, go up to .app's parent
@@ -46,7 +63,7 @@ void tcApp::setup() {
 
         // Search up to 5 parent directories
         for (int i = 0; i < 5 && searchPath.has_parent_path(); i++) {
-            fs::path checkPath = searchPath / "trussc" / "CMakeLists.txt";
+            fs::path checkPath = searchPath / "trussc" / "cmake" / "trussc_app.cmake";
             if (fs::exists(checkPath)) {
                 tcRoot = searchPath.string();
                 strncpy(tcRootBuf, tcRoot.c_str(), sizeof(tcRootBuf) - 1);
@@ -83,6 +100,15 @@ void tcApp::setup() {
         tmp.detectBuildEnvironment();
         installedVsVersions = tmp.installedVsVersions;
         selectedVsIndex = tmp.selectedVsIndex;
+    }
+
+    // Check Android env (shell-aware on macOS for GUI apps)
+    {
+        bool a = hasEnvVar("ANDROID_HOME");
+        bool j = hasEnvVar("JAVA_HOME");
+        androidEnvOk = a && j;
+        if (!a) androidEnvTip += "ANDROID_HOME is not set\n";
+        if (!j) androidEnvTip += "JAVA_HOME is not set";
     }
 
     // Initial draw
@@ -198,7 +224,7 @@ void tcApp::draw() {
         if (ImGui::Button("OK", ImVec2(120, 30))) {
             tcRoot = tcRootBuf;
             // Verify tc_vX.Y.Z folder (check if CMakeLists.txt exists)
-            if (!tcRoot.empty() && fs::exists(tcRoot + "/trussc") && fs::exists(tcRoot + "/trussc/CMakeLists.txt")) {
+            if (!tcRoot.empty() && fs::exists(tcRoot + "/trussc/cmake/trussc_app.cmake")) {
                 showSetupDialog = false;
                 saveConfig();
                 scanAddons();
@@ -393,23 +419,43 @@ void tcApp::draw() {
 
     ImGui::Spacing();
 
-    // Web build option
-    if (ImGui::Checkbox("Web (Emscripten)", &generateWebBuild)) {
-        saveConfig();
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Generate build scripts for WebAssembly.\nRequires Emscripten SDK installed.\nClick to open download page.");
-    }
-    if (ImGui::IsItemClicked()) {
+    // Cross-compile targets (collapsible)
+    if (ImGui::CollapsingHeader("Cross-compile targets")) {
+        ImGui::Indent(8);
+
+        // Android
+        if (ImGui::Checkbox("Android (beta)", &generateAndroidBuild)) {
+            saveConfig();
+        }
+        if (generateAndroidBuild && !androidEnvOk) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "(!)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", androidEnvTip.c_str());
+            }
+        }
+
+        // iOS (macOS only)
 #ifdef __APPLE__
-        system("open https://emscripten.org/docs/getting_started/downloads.html");
-#elif defined(_WIN32)
-        system("start https://emscripten.org/docs/getting_started/downloads.html");
-#else
-        system("xdg-open https://emscripten.org/docs/getting_started/downloads.html");
+        if (ImGui::Checkbox("iOS (beta)", &generateIosBuild)) {
+            saveConfig();
+        }
 #endif
+
+        // Web
+        if (ImGui::Checkbox("Web", &generateWebBuild)) {
+            saveConfig();
+        }
+        if (generateWebBuild) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(100);
+            const char* webBackendItems[] = { "WebGPU", "WebGL" };
+            if (ImGui::Combo("##webBackend", &webBackend, webBackendItems, 2)) {
+                saveConfig();
+            }
+        }
+
+        ImGui::Unindent(8);
     }
 
     ImGui::Spacing();
@@ -567,6 +613,15 @@ void tcApp::loadConfig() {
     if (config.contains("generate_web_build")) {
         generateWebBuild = config["generate_web_build"].get<bool>();
     }
+    if (config.contains("generate_android_build")) {
+        generateAndroidBuild = config["generate_android_build"].get<bool>();
+    }
+    if (config.contains("generate_ios_build")) {
+        generateIosBuild = config["generate_ios_build"].get<bool>();
+    }
+    if (config.contains("web_backend")) {
+        webBackend = config["web_backend"].get<int>();
+    }
     if (config.contains("last_imported_path")) {
         importedProjectPath = config["last_imported_path"].get<string>();
     }
@@ -586,6 +641,9 @@ void tcApp::saveConfig() {
     config["last_project_name"] = projectName;
     config["ide_type"] = static_cast<int>(ideType);
     config["generate_web_build"] = generateWebBuild;
+    config["generate_android_build"] = generateAndroidBuild;
+    config["generate_ios_build"] = generateIosBuild;
+    config["web_backend"] = webBackend;
     config["last_imported_path"] = importedProjectPath;
     saveJson(config, configPath);
 }
@@ -668,8 +726,8 @@ void tcApp::importProject(const string& path) {
                     }
                 }
 
-                // Update tcRoot if valid path (check trussc/CMakeLists.txt)
-                if (!importedTcRoot.empty() && fs::exists(importedTcRoot + "/trussc/CMakeLists.txt")) {
+                // Update tcRoot if valid path
+                if (!importedTcRoot.empty() && fs::exists(importedTcRoot + "/trussc/cmake/trussc_app.cmake")) {
                     tcRoot = importedTcRoot;
                     strncpy(tcRootBuf, tcRoot.c_str(), sizeof(tcRootBuf) - 1);
                     saveConfig();
@@ -785,6 +843,9 @@ ProjectSettings tcApp::buildProjectSettings() {
     s.addonSelected = addonSelected;
     s.ideType = ideType;
     s.generateWebBuild = generateWebBuild;
+    s.generateAndroidBuild = generateAndroidBuild;
+    s.generateIosBuild = generateIosBuild;
+    s.webBackend = webBackend;
     s.detectBuildEnvironment();
     return s;
 }

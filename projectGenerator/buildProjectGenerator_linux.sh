@@ -15,6 +15,14 @@ echo "  TrussC Project Generator Build Script"
 echo "=========================================="
 echo ""
 
+# Check and install dependencies
+"$SCRIPT_DIR/install_dependencies_linux.sh"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Dependency check failed. Please install required packages."
+    exit 1
+fi
+echo ""
+
 # Source directory
 SOURCE_DIR="$SCRIPT_DIR/tools/projectGenerator"
 
@@ -40,10 +48,18 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Calculate parallel jobs based on available RAM (~1.5GiB per compile job)
+AVAIL_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+JOBS=$(awk "BEGIN { n = int($AVAIL_KB / 1572864); if (n < 1) n = 1; print n }")
+MAX_JOBS=$(( $(nproc) + 2 ))
+if [ "$JOBS" -gt "$MAX_JOBS" ]; then
+    JOBS=$MAX_JOBS
+fi
+
 # Build
 echo ""
-echo "Building..."
-cmake --build .
+echo "Building (parallel jobs: $JOBS)..."
+cmake --build . --parallel "$JOBS"
 if [ $? -ne 0 ]; then
     echo ""
     echo "ERROR: Build failed!"

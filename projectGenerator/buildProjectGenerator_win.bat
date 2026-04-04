@@ -44,7 +44,7 @@ if %ERRORLEVEL% neq 0 (
 REM Build
 echo.
 echo Building...
-cmake --build . --config Release
+cmake --build . --config Release --parallel
 if %ERRORLEVEL% neq 0 (
     echo.
     echo ERROR: Build failed!
@@ -62,6 +62,9 @@ if %ERRORLEVEL% neq 0 (
     echo Symlink failed, falling back to copy...
     copy /Y "%SOURCE_DIR%\bin\projectGenerator.exe" "%SCRIPT_DIR%\"
 )
+
+copy /Y "%SOURCE_DIR%\..\..\..\trussc\build-windows\Release\TrussC.dll" "%SOURCE_DIR%\bin\TrussC.dll"
+copy /Y "%SOURCE_DIR%\..\..\..\trussc\build-windows\Release\TrussC.dll" "%SCRIPT_DIR%\TrussC.dll"
 
 echo.
 echo ==========================================

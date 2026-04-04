@@ -16,7 +16,18 @@
 #include <GL/gl.h>
 
 namespace trussc {
-namespace platform {
+
+void bringWindowToFront() {
+    Display* display = XOpenDisplay(nullptr);
+    if (!display) return;
+    Window window = (Window)(uintptr_t)sapp_x11_get_window();
+    if (window) {
+        XRaiseWindow(display, window);
+        XSetInputFocus(display, window, RevertToParent, CurrentTime);
+        XFlush(display);
+    }
+    XCloseDisplay(display);
+}
 
 float getDisplayScaleFactor() {
     // TODO: Implement proper DPI detection using X11/XRandR
@@ -47,7 +58,11 @@ float getDisplayScaleFactor() {
     return dpi / 96.0f;
 }
 
-void setWindowSize(int width, int height) {
+// Immersive mode (no-op on desktop)
+void setImmersiveMode(bool enabled) { (void)enabled; }
+bool getImmersiveMode() { return false; }
+
+void setWindowSizeLogical(int width, int height) {
     // TODO: Implement using X11
     // sokol_app handles window creation, so we need to access the X11 window
     // For now, this is a no-op
@@ -108,6 +123,9 @@ bool captureWindow(Pixels& outPixels) {
 }
 
 bool saveScreenshot(const std::filesystem::path& path) {
+    if (path.is_relative()) {
+        return saveScreenshot(getDataPath(path.string()));
+    }
     Pixels pixels;
     if (!captureWindow(pixels)) {
         return false;
@@ -142,7 +160,24 @@ bool saveScreenshot(const std::filesystem::path& path) {
     }
 }
 
-} // namespace platform
+// ---------------------------------------------------------------------------
+// System sensors (stubs)
+// ---------------------------------------------------------------------------
+float getSystemVolume() { return -1.0f; }
+void setSystemVolume(float volume) { (void)volume; }
+float getSystemBrightness() { return -1.0f; }
+void setSystemBrightness(float brightness) { (void)brightness; }
+ThermalState getThermalState() { return ThermalState::Nominal; }
+float getThermalTemperature() { return -1.0f; }
+float getBatteryLevel() { return -1.0f; }
+bool isBatteryCharging() { return false; }
+Vec3 getAccelerometer() { return Vec3(0, 0, 0); }
+Vec3 getGyroscope() { return Vec3(0, 0, 0); }
+Quaternion getDeviceOrientation() { return Quaternion(1, 0, 0, 0); }
+float getCompassHeading() { return 0.0f; }
+bool isProximityClose() { return false; }
+Location getLocation() { return Location(); }
+
 } // namespace trussc
 
 #endif // __linux__

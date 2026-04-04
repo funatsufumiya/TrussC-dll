@@ -17,7 +17,6 @@
 TRUSSC_C_API float trussc_platform_getDisplayScaleFactor();
 TRUSSC_C_API const char* trussc_platform_getExecutableDir();
 TRUSSC_C_API int trussc_platform_saveScreenshot(const char* path);
-TRUSSC_C_API void trussc_platform_setWindowSize(int width, int height);
 TRUSSC_C_API int trussc_platform_captureWindow(void* outPixels);
 
 // Core lifecycle / internal

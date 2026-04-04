@@ -3,11 +3,11 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-# プラットフォームに応じて言語を設定（OBJC/OBJCXX は macOS のみ）
-if(APPLE)
-    project(TrussC VERSION 0.0.1 LANGUAGES C CXX OBJC OBJCXX)
-else()
-    project(TrussC VERSION 0.0.1 LANGUAGES C CXX)
+# Start with C/CXX only — OBJC/OBJCXX enabled after project() if on macOS
+project(TrussC VERSION 0.0.1 LANGUAGES C CXX)
+# Toolchain variables (ANDROID, APPLE) are available after project()
+if(APPLE AND NOT ANDROID)
+    enable_language(OBJC OBJCXX)
 endif()
 
 # C++20 を使用
@@ -27,21 +27,44 @@ set(TC_ROOT "${TC_ROOT}" CACHE PATH "TrussC root directory" FORCE)
 if(EMSCRIPTEN)
     # Emscripten は UNIX=TRUE を設定するので、UNIX より前にチェック
     set(TC_PLATFORM_EMSCRIPTEN TRUE)
-    set(TC_GRAPHICS_BACKEND "WGPU")  # WebGPU
-    message(STATUS "[TrussC] Platform: Emscripten (WebGPU)")
+    # Web backend: WGPU (default) or GLES3 (WebGL2)
+    if(NOT DEFINED TC_WEB_BACKEND)
+        set(TC_WEB_BACKEND "WGPU")
+    endif()
+    set(TC_GRAPHICS_BACKEND "${TC_WEB_BACKEND}")
+    message(STATUS "[TrussC] Platform: Emscripten (${TC_WEB_BACKEND})")
+elseif(ANDROID)
+    # Android NDK toolchain sets ANDROID=TRUE and UNIX=TRUE
+    set(TC_PLATFORM_ANDROID TRUE)
+    set(TC_GRAPHICS_BACKEND "GLES3")
+    message(STATUS "[TrussC] Platform: Android (GLES3)")
 elseif(APPLE)
-    set(TC_PLATFORM_MACOS TRUE)
-    set(TC_GRAPHICS_BACKEND "METAL")
-    message(STATUS "[TrussC] Platform: macOS (Metal)")
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(TC_PLATFORM_IOS TRUE)
+        set(TC_GRAPHICS_BACKEND "METAL")
+        message(STATUS "[TrussC] Platform: iOS (Metal)")
+    else()
+        set(TC_PLATFORM_MACOS TRUE)
+        set(TC_GRAPHICS_BACKEND "METAL")
+        message(STATUS "[TrussC] Platform: macOS (Metal)")
+    endif()
 elseif(WIN32)
     set(TC_PLATFORM_WINDOWS TRUE)
     set(TC_GRAPHICS_BACKEND "D3D11")
     message(STATUS "[TrussC] Platform: Windows (D3D11)")
 elseif(UNIX)
-    if(EXISTS "/opt/vc/include/bcm_host.h")
+    # Raspberry Pi detection via Device Tree (works on all Pi OS versions)
+    set(_TC_IS_RASPI FALSE)
+    if(EXISTS "/proc/device-tree/model")
+        file(READ "/proc/device-tree/model" _TC_DEVICE_MODEL)
+        if(_TC_DEVICE_MODEL MATCHES "Raspberry Pi")
+            set(_TC_IS_RASPI TRUE)
+        endif()
+    endif()
+    if(_TC_IS_RASPI)
         set(TC_PLATFORM_RASPBIAN TRUE)
         set(TC_GRAPHICS_BACKEND "GLES3")
-        message(STATUS "[TrussC] Platform: Raspbian (GLES3)")
+        message(STATUS "[TrussC] Platform: Raspberry Pi (GLES3)")
     else()
         set(TC_PLATFORM_LINUX TRUE)
         set(TC_GRAPHICS_BACKEND "GLCORE")
@@ -68,11 +91,15 @@ file(GLOB TC_SOUND_SOURCES    ${CMAKE_CURRENT_SOURCE_DIR}/include/tc/sound/*.cpp
 # プラットフォーム固有ソースファイル
 if(TC_PLATFORM_EMSCRIPTEN)
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/web/*.cpp)
+elseif(TC_PLATFORM_IOS)
+    file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/ios/*.mm)
+elseif(TC_PLATFORM_ANDROID)
+    file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/android/*.cpp)
 elseif(TC_PLATFORM_MACOS)
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/mac/*.mm)
 elseif(TC_PLATFORM_WINDOWS)
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/win/*.cpp)
-elseif(TC_PLATFORM_LINUX)
+elseif(TC_PLATFORM_LINUX OR TC_PLATFORM_RASPBIAN)
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/linux/*.cpp)
 else()
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/linux/*.cpp)
@@ -123,6 +150,12 @@ if(MSVC)
     endforeach()
 endif()
 
+# iOS: sound sources include ObjC headers (AVFoundation) via miniaudio,
+# so they must be compiled as Objective-C++
+if(TC_PLATFORM_IOS AND TC_SOUND_SOURCES)
+    set_source_files_properties(${TC_SOUND_SOURCES} PROPERTIES LANGUAGE OBJCXX)
+endif()
+
 # インクルードパス
 foreach(_t IN LISTS _TRUSSC_TARGETS)
     target_include_directories(${_t} PUBLIC
@@ -136,11 +169,35 @@ endforeach()
 # =============================================================================
 if(TC_PLATFORM_EMSCRIPTEN)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
-        target_compile_definitions(${_t} PUBLIC SOKOL_WGPU)
-        # WebGPU port for headers (emdawnwebgpu provides webgpu/webgpu.h)
-        target_compile_options(${_t} PUBLIC --use-port=emdawnwebgpu)
+        if(TC_GRAPHICS_BACKEND STREQUAL "WGPU")
+            target_compile_definitions(${_t} PUBLIC SOKOL_WGPU)
+            target_compile_options(${_t} PUBLIC --use-port=emdawnwebgpu)
+        else()
+            target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
+        endif()
     endforeach()
+
     # Emscripten リンクオプションはアプリ側で設定（trussc_app.cmake）
+
+elseif(TC_PLATFORM_IOS)
+    target_compile_definitions(TrussC PUBLIC SOKOL_METAL)
+    target_link_libraries(TrussC PUBLIC
+        "-framework Foundation"
+        "-framework UIKit"
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+        "-framework CoreGraphics"
+        "-framework AudioToolbox"
+        "-framework AVFoundation"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework UniformTypeIdentifiers"
+        "-framework CoreMotion"
+        "-framework CoreLocation"
+        "-framework MediaPlayer"
+    )
+    target_compile_options(TrussC PRIVATE -fobjc-arc)
 
 elseif(TC_PLATFORM_MACOS)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
@@ -155,6 +212,10 @@ elseif(TC_PLATFORM_MACOS)
             "-framework AVFoundation"
             "-framework CoreMedia"
             "-framework CoreVideo"
+            "-framework CoreAudio"
+            "-framework IOKit"
+            "-framework CoreDisplay"
+            "-framework CoreLocation"
         )
         target_compile_options(${_t} PRIVATE -fobjc-arc)
     endforeach()
@@ -223,15 +284,40 @@ elseif(TC_PLATFORM_LINUX)
         )
     endforeach()
 
+elseif(TC_PLATFORM_ANDROID)
+    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
+    target_link_libraries(TrussC PUBLIC
+        GLESv3
+        EGL
+        log
+        android
+    )
+
 elseif(TC_PLATFORM_RASPBIAN)
+find_package(X11 REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+    pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libswscale libavutil)
+    pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0)
+
     foreach(_t IN LISTS _TRUSSC_TARGETS)
         target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
-        target_include_directories(${_t} PUBLIC /opt/vc/include)
+        target_include_directories(${_t} PUBLIC
+            ${GTK3_INCLUDE_DIRS}
+            ${FFMPEG_INCLUDE_DIRS}
+            ${GSTREAMER_INCLUDE_DIRS}
+        )
         target_link_libraries(${_t} PUBLIC
+            ${X11_LIBRARIES}
+            ${X11_Xi_LIB}
+            ${X11_Xcursor_LIB}
             GLESv2
             EGL
-            bcm_host
+            ${GTK3_LIBRARIES}
+            ${FFMPEG_LIBRARIES}
+            ${GSTREAMER_LIBRARIES}
             pthread
+            dl
         )
     endforeach()
 endif()
@@ -253,11 +339,68 @@ function(trussc_setup_icon TARGET_NAME)
     set(ICON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/icon")
     set(DEFAULT_DIR "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources")
 
-    if(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        _trussc_setup_icon_ios(${TARGET_NAME} "${ICON_DIR}" "${DEFAULT_DIR}")
+    elseif(APPLE)
         _trussc_setup_icon_macos(${TARGET_NAME} "${ICON_DIR}" "${DEFAULT_DIR}")
     elseif(WIN32)
         _trussc_setup_icon_windows(${TARGET_NAME} "${ICON_DIR}" "${DEFAULT_DIR}")
     endif()
+endfunction()
+
+# -----------------------------------------------------------------------------
+# iOS icon setup (AppIcon.xcassets with single 1024x1024 PNG)
+# -----------------------------------------------------------------------------
+function(_trussc_setup_icon_ios TARGET_NAME ICON_DIR DEFAULT_DIR)
+    # Find icon PNG: project icon/ dir first, then default
+    set(ICON_PNG "")
+    file(GLOB PROJECT_PNGS "${ICON_DIR}/*.png")
+    if(PROJECT_PNGS)
+        list(GET PROJECT_PNGS 0 ICON_PNG)
+        get_filename_component(ICON_PNG_NAME "${ICON_PNG}" NAME)
+        message(STATUS "[${TARGET_NAME}] Using iOS icon: ${ICON_PNG_NAME}")
+    elseif(EXISTS "${DEFAULT_DIR}/default.png")
+        set(ICON_PNG "${DEFAULT_DIR}/default.png")
+        message(STATUS "[${TARGET_NAME}] Using default iOS icon")
+    else()
+        message(STATUS "[${TARGET_NAME}] No iOS icon found, skipping")
+        return()
+    endif()
+
+    # Generate AppIcon.xcassets in build directory
+    set(XCASSETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.xcassets")
+    set(APPICONSET_DIR "${XCASSETS_DIR}/AppIcon.appiconset")
+    file(MAKE_DIRECTORY "${APPICONSET_DIR}")
+
+    # Copy PNG
+    file(COPY "${ICON_PNG}" DESTINATION "${APPICONSET_DIR}")
+    get_filename_component(ICON_FILENAME "${ICON_PNG}" NAME)
+
+    # Generate Contents.json (single size, Xcode 14+)
+    file(WRITE "${APPICONSET_DIR}/Contents.json"
+"{
+  \"images\" : [
+    {
+      \"filename\" : \"${ICON_FILENAME}\",
+      \"idiom\" : \"universal\",
+      \"platform\" : \"ios\",
+      \"size\" : \"1024x1024\"
+    }
+  ],
+  \"info\" : {
+    \"author\" : \"xcode\",
+    \"version\" : 1
+  }
+}
+")
+
+    # Add xcassets to target (Xcode handles asset catalog compilation automatically)
+    target_sources(${TARGET_NAME} PRIVATE "${XCASSETS_DIR}")
+
+    # Tell Xcode to use this icon
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+    )
 endfunction()
 
 # -----------------------------------------------------------------------------
@@ -520,7 +663,7 @@ if(TC_SHADER_SOURCES)
     set(_TC_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/tc/gpu/shaders")
     file(MAKE_DIRECTORY "${_TC_SHADER_OUTPUT_DIR}")
 
-    set(_TC_SOKOL_SLANG "metal_macos:hlsl5:glsl300es:wgsl")
+    set(_TC_SOKOL_SLANG "metal_macos:metal_ios:hlsl5:glsl300es:wgsl")
 
     set(_TC_SHADER_OUTPUTS "")
     foreach(_shader_src ${TC_SHADER_SOURCES})

@@ -13,9 +13,9 @@
 #include "../sound/tcSound.h"
 
 // Forward declaration for tcPlatform.h (avoid circular include)
-namespace trussc { namespace platform {
+namespace trussc {
     std::string getExecutableDir();
-}}
+}
 
 namespace trussc {
 

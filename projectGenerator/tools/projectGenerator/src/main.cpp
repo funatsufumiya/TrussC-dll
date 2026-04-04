@@ -60,7 +60,7 @@ static void parseAddonsMake(const string& projectPath, const vector<string>& ava
 static string autoDetectTcRoot() {
     // 1. Try environment variable
     const char* envRoot = std::getenv("TRUSSC_DIR");
-    if (envRoot && fs::exists(string(envRoot) + "/trussc/CMakeLists.txt")) {
+    if (envRoot && fs::exists(string(envRoot) + "/trussc/cmake/trussc_app.cmake")) {
         return string(envRoot);
     }
 
@@ -70,7 +70,7 @@ static string autoDetectTcRoot() {
     // We assume we are in TRUSSC_ROOT/... something
     
     // Search up to 5 parent directories
-    fs::path exePath = platform::getExecutablePath();
+    fs::path exePath = getExecutablePath();
     fs::path searchPath = exePath.parent_path();
 
     #ifdef __APPLE__
@@ -81,7 +81,7 @@ static string autoDetectTcRoot() {
     #endif
 
     for (int i = 0; i < 5 && searchPath.has_parent_path(); i++) {
-        fs::path checkPath = searchPath / "trussc" / "CMakeLists.txt";
+        fs::path checkPath = searchPath / "trussc" / "cmake" / "trussc_app.cmake";
         if (fs::exists(checkPath)) {
             return searchPath.string();
         }
@@ -100,6 +100,8 @@ void printHelp() {
     cout << "  --dir <path>             Project parent directory (for --generate)" << endl;
     cout << "  --tc-root <path>         Path to TrussC root directory" << endl;
     cout << "  --web                    Enable Web build (Emscripten)" << endl;
+    cout << "  --android                Enable Android build (requires ANDROID_HOME)" << endl;
+    cout << "  --ios                    Enable iOS build (macOS only, generates Xcode project)" << endl;
     cout << "  --ide <type>             IDE type (vscode, cursor, xcode, vs, cmake)" << endl;
     cout << "  --help                   Show this help" << endl;
 }
@@ -114,6 +116,8 @@ int main(int argc, char* argv[]) {
     string projectName;
     string tcRoot;
     bool web = false;
+    bool android = false;
+    bool ios = false;
     string ideStr = "vscode";
 
     // Helper to check if next arg is a valid value (not another flag)
@@ -157,6 +161,10 @@ int main(int argc, char* argv[]) {
             }
         } else if (args[i] == "--web") {
             web = true;
+        } else if (args[i] == "--android") {
+            android = true;
+        } else if (args[i] == "--ios") {
+            ios = true;
         } else if (args[i] == "--ide") {
             string next = getNextArg(i);
             if (!next.empty()) {
@@ -191,6 +199,8 @@ int main(int argc, char* argv[]) {
         ProjectSettings settings;
         settings.tcRoot = tcRoot;
         settings.generateWebBuild = web;
+        settings.generateAndroidBuild = android;
+        settings.generateIosBuild = ios;
         settings.detectBuildEnvironment();
         
         // Parse IDE type
@@ -216,7 +226,10 @@ int main(int argc, char* argv[]) {
                 cerr << "Error: Project path '" << targetPath << "' does not exist." << endl;
                 return 1;
             }
-            
+
+            // Derive project name from folder name
+            settings.projectName = fs::canonical(targetPath).filename().string();
+
             // Parse existing addons.make
             parseAddonsMake(targetPath, availableAddons, settings.addonSelected);
             settings.addons = availableAddons; // Pass all available, selection is in addonSelected
@@ -257,9 +270,21 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    #ifdef __linux__
+    const char* display = std::getenv("DISPLAY");
+    const char* wayland = std::getenv("WAYLAND_DISPLAY");
+    if ((!display || display[0] == '\0') && (!wayland || wayland[0] == '\0')) {
+        cerr << "Error: No display server found (DISPLAY and WAYLAND_DISPLAY are not set)." << endl;
+        cerr << "Please run this from a desktop environment (X11 or Wayland)." << endl;
+        cerr << "  - If using SSH, connect with: ssh -X user@host" << endl;
+        cerr << "  - For CLI usage, run with --help" << endl;
+        return 1;
+    }
+    #endif
+
     WindowSettings settings;
     settings.title = "TrussC-dll Project Generator";
     settings.width = 500;
-    settings.height = 560;
+    settings.height = 600;
     return runApp<tcApp>(settings);
 }

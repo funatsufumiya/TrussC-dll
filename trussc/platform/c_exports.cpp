@@ -1,37 +1,34 @@
 #include "TrussC.h"
+#include "tcPlatform.h"
 #include "tc/platform/c_exports.h"
 #include <string>
 
 extern "C" {
 
     float trussc_platform_getDisplayScaleFactor() {
-        return trussc::platform::getDisplayScaleFactor();
+        return trussc::getDisplayScaleFactor();
     }
 
     const char* trussc_platform_getExecutableDir() {
         static std::string dir;
-        dir = trussc::platform::getExecutableDir();
+        dir = trussc::getExecutableDir();
         return dir.c_str();
     }
 
     int trussc_platform_saveScreenshot(const char* path) {
         if (!path) return 0;
         try {
-            bool ok = trussc::platform::saveScreenshot(std::filesystem::path(path));
+            bool ok = trussc::saveScreenshot(std::filesystem::path(path));
             return ok ? 1 : 0;
         } catch (...) {
             return 0;
         }
     }
 
-    void trussc_platform_setWindowSize(int width, int height) {
-        trussc::platform::setWindowSize(width, height);
-    }
-
     int trussc_platform_captureWindow(void* outPixels) {
         if (!outPixels) return 0;
         trussc::Pixels* p = reinterpret_cast<trussc::Pixels*>(outPixels);
-        bool ok = trussc::platform::captureWindow(*p);
+        bool ok = trussc::captureWindow(*p);
         return ok ? 1 : 0;
     }
 
