@@ -524,6 +524,15 @@ message(\"  [HotReload] Generated \${DEF_FILE} with \${SYM_COUNT} symbols\")
                         # against the host process at dlopen time.
                         get_target_property(_TC_A_TYPE ${_TC_LINE} TYPE)
                         if(_TC_A_TYPE STREQUAL "STATIC_LIBRARY")
+                            # Linux requires every object file linked into a
+                            # shared library to be position-independent. Static
+                            # libs default to non-PIC on Linux/GCC, so the
+                            # guest .so link fails with "relocation R_X86_64_PC32
+                            # ... can not be used when making a shared object;
+                            # recompile with -fPIC". Forcing PIC on the addon
+                            # target itself is harmless on macOS/Windows.
+                            set_target_properties(${_TC_LINE} PROPERTIES
+                                POSITION_INDEPENDENT_CODE ON)
                             target_link_libraries(guest PRIVATE $<TARGET_FILE:${_TC_LINE}>)
                             add_dependencies(guest ${_TC_LINE})
                         endif()
