@@ -29,7 +29,7 @@ Hybrid composition of native wrappers and high-quality lightweight libraries. Se
 | **Graphics** | sokol_gfx (Metal/DX12/Vulkan) | zlib |
 | **Shader** | sokol-shdc (GLSL → Native) | zlib |
 | **Math** | In-house (C++20 template) | MIT |
-| **UI** | Dear ImGui | MIT |
+| **UI** | Dear ImGui (tcxImGui addon) | MIT |
 | **Image** | stb_image, stb_image_write | Public Domain |
 | **Font** | stb_truetype + fontstash | Public Domain |
 | **Audio** | sokol_audio + dr_libs | zlib/PD |
@@ -58,9 +58,9 @@ MyProject/
 
 ## 3.5 Project Generation & TRUSSC_DIR
 
-### How projectGenerator Works
+### How trusscli Works
 
-The `projectGenerator` tool creates new projects by:
+The `trusscli` tool (TrussC Project Generator) creates new projects by:
 1. Copying template files (CMakeLists.txt copied as-is, no modification)
 2. Generating `CMakePresets.json` with OS-specific configuration
 3. Generating IDE-specific files (.vscode/, Xcode project, etc.)
@@ -374,32 +374,52 @@ tc::enable3DPerspective(fovY, nearZ, farZ);
 tc::disable3D();
 ```
 
-### Lighting System (CPU-based Phong)
+### Lighting System
 
-sokol_gl cannot pass normals to shaders, so lighting is calculated on CPU.
+Two lighting modes are available:
+
+- **CpuPhong** — Legacy CPU-based Phong shading via sokol_gl. Simple but limited.
+- **GpuPbr** — GPU-based Cook-Torrance PBR with metallic-roughness workflow.
+
+#### GPU PBR (recommended)
 
 ```cpp
 void tcApp::setup() {
-    light_.setDirectional(Vec3(-1, -1, -1));
-    material_ = Material::gold();
+    light.setSpot(Vec3(0, 200, 300), Vec3(0, 0, -1), 0.0f, 0.45f);
+    light.setDiffuse(1.0f, 1.0f, 1.0f);
+    light.setIntensity(5.0f);
+    light.enableShadow(1024);
+
+    mat = Material::gold();
+    env.loadProcedural();
+    setEnvironment(env);
 }
 
 void tcApp::draw() {
-    tc::enable3DPerspective(fov, near, far);
-    tc::enableLighting();
-    tc::addLight(light_);
-    tc::setMaterial(material_);
+    cam.begin();
+    clearLights();
+    addLight(light);
+    setCameraPosition(cam.getPosition());
 
-    sphere.draw();
+    // Shadow pass
+    beginShadowPass(light);
+    shadowDraw(mesh);
+    endShadowPass();
 
-    tc::disableLighting();
-    tc::disable3D();
+    // PBR pass
+    setMaterial(mat);
+    mesh.draw();
+
+    clearMaterial();
+    cam.end();
 }
 ```
 
-**Light Types:** Directional, Point (Spot planned)
+**Light Types:** Directional, Point, Spot (with cone falloff), Projector (texture + lens shift)
 
-**Material Presets:** `Material::gold()`, `Material::silver()`, `Material::plastic(color)`, etc.
+**PBR Material Presets:** `Material::gold()`, `Material::silver()`, `Material::copper()`, `Material::iron()`, `Material::plastic(color)`, `Material::rubber(color)`
+
+**Features:** IES photometric profiles, IBL environment maps (HDR/procedural), normal maps, PBR texture maps (glTF 2.0), shadow mapping with PCF
 
 ---
 
