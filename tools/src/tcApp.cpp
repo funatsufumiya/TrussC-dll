@@ -33,13 +33,13 @@ void tcApp::setup() {
     // Power-saving mode: update at 30fps, draw is event-driven
     setIndependentFps(30, EVENT_DRIVEN);
 
-    // Config file path (~/.trussc/config.json)
+    // Config file path (~/.trussc_dll/config.json)
 #ifdef _WIN32
     string home = getenv("USERPROFILE") ? getenv("USERPROFILE") : "";
 #else
     string home = getenv("HOME") ? getenv("HOME") : "";
 #endif // _WIN32
-    configPath = home + "/.trussc/config.json";
+    configPath = home + "/.trussc_dll/config.json";
 
     // Load config
     loadConfig();
