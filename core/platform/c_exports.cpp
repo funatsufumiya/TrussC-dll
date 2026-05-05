@@ -1,6 +1,6 @@
 #include "TrussC.h"
 #include "tcPlatform.h"
-#include "tc/platform/c_exports.h"
+#include "core/platform/c_exports.h"
 #include <string>
 
 extern "C" {
