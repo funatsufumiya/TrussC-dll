@@ -750,6 +750,18 @@ message(\"  [HotReload] Generated \${DEF_FILE} with \${SYM_COUNT} symbols\")
         set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
         # Windows: Setup icon
         trussc_setup_icon(${PROJECT_NAME})
+
+        # Copy TrussC shared library to the same folder as the executable (Windows/Linux/macOS)
+        if(WIN32 OR APPLE OR (UNIX AND NOT ANDROID AND NOT EMSCRIPTEN))
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E echo "  [Copy Lib] $<TARGET_FILE:TrussC> -> $<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:TrussC>
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>
+                COMMENT "[${PROJECT_NAME}] Copying TrussC shared library to bin directory"
+                VERBATIM
+            )
+        endif()
     endif()
 
     message(STATUS "[${PROJECT_NAME}] TrussC app configured")

@@ -64,8 +64,13 @@ if %ERRORLEVEL% neq 0 (
     copy /Y "%SOURCE_DIR%\bin\trusscli.exe" "%SCRIPT_DIR%\"
 )
 
-copy /Y "%SOURCE_DIR%\..\..\..\trussc\build-windows\Release\TrussC.dll" "%SOURCE_DIR%\bin\TrussC.dll"
-copy /Y "%SOURCE_DIR%\..\..\..\trussc\build-windows\Release\TrussC.dll" "%SCRIPT_DIR%\TrussC.dll"
+echo.
+echo Copying TrussC.dll dependencies...
+set "DLL_SRC=%SOURCE_DIR%\..\core\build-windows\Release\TrussC.dll"
+echo   [Copy DLL] "%DLL_SRC%" -^> "%SOURCE_DIR%\bin\TrussC.dll"
+copy /Y "%DLL_SRC%" "%SOURCE_DIR%\bin\TrussC.dll"
+echo   [Copy DLL] "%DLL_SRC%" -^> "%SCRIPT_DIR%\TrussC.dll"
+copy /Y "%DLL_SRC%" "%SCRIPT_DIR%\TrussC.dll"
 
 echo.
 echo ==========================================
