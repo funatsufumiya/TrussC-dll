@@ -87,7 +87,7 @@ TrussC has undergone bold structural reforms to solve "complexity" and "performa
 
 * **openFrameworks:**
   * **Naming:** `ofx` prefix (e.g.: `ofxGui`, `ofxOsc`)
-  * **Installation:** Select checkboxes in projectGenerator, or write in `addons.make` file.
+  * **Installation:** Select checkboxes in projectGenerator, or write in `addons.make` file. (TrussC: use `trusscli add` or the GUI)
   * **Build:** Often requires manually adding paths to IDE project settings.
   * **Namespace:** No standard convention, often defined directly in global namespace.
   * **Issue:** Manual dependency resolution between addons. If "ofxA depends on ofxB", both must be written in addons.make.
@@ -109,7 +109,7 @@ TrussC has undergone bold structural reforms to solve "complexity" and "performa
 
 | Item | openFrameworks | TrussC |
 |:-----|:---------------|:-------|
-| Location | `of/addons/ofxName/` | `trussc/addons/tcxName/` |
+| Location | `of/addons/ofxName/` | `addons/tcxName/` |
 | Source code | `src/` | `src/` |
 | Headers | `src/` (mixed) | `include/tcxName/` (separate) |
 | Examples | `example/` | `examples/` |
@@ -279,12 +279,14 @@ Reference for oF users finding equivalent features in TrussC.
 | `ofGetKeyPressed` | `isKeyPressed(key)` |  |
 | `ofShowCursor` | `showCursor()` |  |
 | `ofHideCursor` | `hideCursor()` |  |
+| `ofGetWindowMode` | `isFullscreen()` |  |
+| `ofSetFullscreen` | `setFullscreen(fullscreen)` |  |
 
 ### **Graphics**
 
 | openFrameworks | TrussC | Notes |
 |:---|:---|:---|
-| `ofClear / ofBackground` | `clear(gray)` |  |
+| `ofClear / ofBackground` | `clear()` |  |
 | `ofSetColor` | `setColor(gray)` | Range 0-1 instead of 0-255 |
 | `ofDrawRectangle` | `drawRect(x, y, w, h)` |  |
 | `ofDrawRectRounded` | `drawRectRounded(x, y, w, h, radius)` |  |
@@ -299,11 +301,15 @@ Reference for oF users finding equivalent features in TrussC.
 | `ofVertex` | `vertex(x, y)` |  |
 | `ofEndShape` | `endShape(close)` |  |
 | `ofDrawBitmapString` | `drawBitmapString(text, x, y)` |  |
+| `ofDrawBitmapStringHighlight` | `drawBitmapStringHighlight(text, x, y, background, foreground)` |  |
 | `ofSetFrameRate` | `setFps(fps)` |  |
 | `ofFill` | `fill()` |  |
 | `ofNoFill` | `noFill()` |  |
 | `ofSetLineWidth` | `setStrokeWeight(weight)` |  |
 | `ofSetCircleResolution` | `setCircleResolution(resolution)` |  |
+| `ofPushStyle` | `pushStyle()` |  |
+| `ofPopStyle` | `popStyle()` |  |
+| `ofEnableBlendMode` | `setBlendMode(mode)` |  |
 | `ofPushStyle` | `pushStyle()` |  |
 | `ofPopStyle` | `popStyle()` |  |
 
@@ -326,7 +332,7 @@ Reference for oF users finding equivalent features in TrussC.
 | `ofSeedRandom` | `randomSeed(seed)` |  |
 | `ofNoise` | `noise(x)` |  |
 | `ofSignedNoise` | `signedNoise(x)` |  |
-| `ofLerp` | `lerp(a, b, t)` |  |
+| `ofLerp` | `lerp(a, b, t)` | std::lerp (C++20) |
 | `ofClamp` | `clamp(v, min, max)` |  |
 | `ofMap` | `remap(v, inMin, inMax, outMin, outMax)` |  |
 | `ofDegToRad` | `deg2rad(degrees)` |  |

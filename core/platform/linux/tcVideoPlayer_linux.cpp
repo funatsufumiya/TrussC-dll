@@ -1,0 +1,1420 @@
+// =============================================================================
+// tcVideoPlayer_linux.cpp - Linux VideoPlayer implementation using FFmpeg
+// =============================================================================
+// Uses libavcodec/libavformat for video decoding.
+// Frames are converted to RGBA and uploaded to sokol_gfx texture.
+// =============================================================================
+
+#ifdef __linux__
+
+#include "TrussC.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/time.h>
+#include <libavutil/opt.h>
+#include <libavutil/hwcontext.h>
+}
+
+#include <thread>
+#include <atomic>
+#include <queue>
+#include <condition_variable>
+
+using namespace trussc;
+
+// =============================================================================
+// HW backend detection
+// =============================================================================
+// Runtime lookup (no compile-time ifdefs) — returns AV_HWDEVICE_TYPE_NONE
+// if no listed backend is available on this system.
+static AVHWDeviceType tryCreateHwDevice(AVBufferRef** outCtx) {
+    static const char* kOrder[] = {
+        "cuda",     // NVIDIA NVDEC (Kepler / Maxwell gen2+)
+        "vaapi",    // Intel / AMD
+        "vdpau",    // Older NVIDIA (X11 only, pre-NVDEC)
+        "v4l2m2m",  // RPi / ARM SoCs (hardware codec)
+        "drm",      // RPi 5 DRM/KMS path
+        nullptr,
+    };
+    for (int i = 0; kOrder[i] != nullptr; ++i) {
+        AVHWDeviceType type = av_hwdevice_find_type_by_name(kOrder[i]);
+        if (type == AV_HWDEVICE_TYPE_NONE) continue;
+        if (av_hwdevice_ctx_create(outCtx, type, nullptr, nullptr, 0) >= 0) {
+            return type;
+        }
+    }
+    return AV_HWDEVICE_TYPE_NONE;
+}
+
+// =============================================================================
+// TCVideoPlayerImpl - Linux implementation using FFmpeg
+// =============================================================================
+class TCVideoPlayerImpl {
+public:
+    TCVideoPlayerImpl() = default;
+    ~TCVideoPlayerImpl() { close(); }
+
+    bool load(const std::string& path, VideoPlayer* player);
+    void close();
+    void play();
+    void stop();
+    void setPaused(bool paused);
+    void update(VideoPlayer* player);
+
+    bool hasNewFrame() const { return hasNewFrame_; }
+    bool isFinished() const { return isFinished_; }
+
+    float getPosition() const;
+    void setPosition(float pct);
+    float getDuration() const;
+
+    void setVolume(float vol);
+    void setSpeed(float speed);
+    void setLoop(bool loop);
+
+    int getCurrentFrame() const;
+    int getTotalFrames() const;
+    void setFrame(int frame);
+    void nextFrame();
+    void previousFrame();
+
+    int getWidth() const { return width_; }
+    int getHeight() const { return height_; }
+
+    bool hasAudio() const { return hasAudio_; }
+    uint32_t getAudioCodec() const { return audioCodec_; }
+    int getAudioSampleRate() const { return audioSampleRate_; }
+    int getAudioChannels() const { return audioChannels_; }
+    std::vector<uint8_t> getAudioData() const;
+
+    bool        isUsingHwAccel() const { return hwType_ != AV_HWDEVICE_TYPE_NONE; }
+    std::string getHwAccelName() const {
+        if (hwType_ == AV_HWDEVICE_TYPE_NONE) return "software";
+        const char* n = av_hwdevice_get_type_name(hwType_);
+        return n ? n : "unknown";
+    }
+
+    Sound audioSound_;
+    std::shared_ptr<SoundBuffer> audioBuffer_;
+
+private:
+    bool loadAudioForPlayback();
+    void decodeThread();
+    bool decodeNextFrame();
+    void seekToTime(double seconds);
+    void probeHwOutputFormat();
+
+    // FFmpeg context
+    AVFormatContext* formatCtx_ = nullptr;
+    AVCodecContext* codecCtx_ = nullptr;
+    SwsContext* swsCtx_ = nullptr;
+    AVFrame* frame_ = nullptr;
+    AVFrame* frameRGBA_ = nullptr;
+    AVPacket* packet_ = nullptr;
+    // Set when packet_ holds a referenced packet that avcodec_send_packet
+    // returned EAGAIN on. The packet must be re-sent (not re-read) after the
+    // decoder is drained, otherwise the stream would lose data.
+    bool packetPending_ = false;
+    AVBufferRef*   hwDeviceCtx_   = nullptr;
+    AVHWDeviceType hwType_        = AV_HWDEVICE_TYPE_NONE;
+    AVPixelFormat  lastScalerFmt_ = AV_PIX_FMT_NONE;
+    // Filled by probeHwOutputFormat() after opening the codec. For HW decode
+    // this is the format the first transferred frame actually produced (e.g.
+    // NV12 on most VAAPI/NVDEC paths, P010 for 10-bit, YUV420P for some
+    // V4L2M2M). AV_PIX_FMT_NONE if no HW or probe failed.
+    AVPixelFormat  probedFormat_  = AV_PIX_FMT_NONE;
+
+    int videoStreamIndex_ = -1;
+    int audioStreamIndex_ = -1;
+
+    // Audio properties
+    bool hasAudio_ = false;
+    uint32_t audioCodec_ = 0;
+    int audioSampleRate_ = 0;
+    int audioChannels_ = 0;
+    std::string filePath_;
+
+    // Video properties
+    int width_ = 0;
+    int height_ = 0;
+    double duration_ = 0.0;
+    double frameRate_ = 30.0;
+    AVRational timeBase_ = {1, 1};
+
+    // Playback state
+    std::atomic<bool> isLoaded_{false};
+    std::atomic<bool> isPlaying_{false};
+    std::atomic<bool> isPaused_{false};
+    std::atomic<bool> hasNewFrame_{false};
+    std::atomic<bool> isFinished_{false};
+    std::atomic<bool> isLoop_{false};
+    std::atomic<bool> shouldStop_{false};
+    std::atomic<bool> seekRequested_{false};
+    std::atomic<double> seekTarget_{0.0};
+
+    float volume_ = 1.0f;
+    float speed_ = 1.0f;
+
+    // Threading
+    std::thread decodeThread_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+
+    // Frame queue
+    struct FrameData {
+        std::vector<uint8_t> pixels;    // RGBA, or NV12 Y-plane when isNV12
+        std::vector<uint8_t> pixelsUV;  // NV12 UV-plane (empty when !isNV12)
+        bool isNV12 = false;
+        double pts;
+    };
+    std::queue<FrameData> frameQueue_;
+    static constexpr size_t MAX_QUEUE_SIZE = 4;
+
+    // Timing
+    double currentPts_ = 0.0;
+    double playbackStartTime_ = 0.0;
+    double pausedTime_ = 0.0;
+
+    // Pixel buffer
+    uint8_t* rgbaBuffer_ = nullptr;
+    int rgbaBufferSize_ = 0;
+
+public:
+    bool nv12Mode_ = false;  // set by loadPlatform() when HW decode produces NV12
+    // Runtime check: HW backend is active AND the first probed frame came
+    // out as NV12 after hwframe_transfer. Different backends / codecs /
+    // bit-depths can produce P010, YUV420P, etc. — those fall back to RGBA.
+    bool isNV12Capable() const {
+        return hwType_ != AV_HWDEVICE_TYPE_NONE
+            && probedFormat_ == AV_PIX_FMT_NV12;
+    }
+};
+
+// =============================================================================
+// Implementation
+// =============================================================================
+
+bool TCVideoPlayerImpl::load(const std::string& path, VideoPlayer* player) {
+    filePath_ = path;
+
+    // Open file
+    if (avformat_open_input(&formatCtx_, path.c_str(), nullptr, nullptr) < 0) {
+        logError("VideoPlayer") << "Failed to open file: " << path;
+        return false;
+    }
+
+    // Get stream info
+    if (avformat_find_stream_info(formatCtx_, nullptr) < 0) {
+        logError("VideoPlayer") << "Failed to find stream info";
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    // Find video stream
+    for (unsigned int i = 0; i < formatCtx_->nb_streams; i++) {
+        if (formatCtx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            videoStreamIndex_ = i;
+            break;
+        }
+    }
+
+    if (videoStreamIndex_ < 0) {
+        logError("VideoPlayer") << "No video stream found";
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    // Find audio stream
+    for (unsigned int i = 0; i < formatCtx_->nb_streams; i++) {
+        if (formatCtx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audioStreamIndex_ = i;
+            break;
+        }
+    }
+
+    if (audioStreamIndex_ >= 0) {
+        AVCodecParameters* audioPar = formatCtx_->streams[audioStreamIndex_]->codecpar;
+        hasAudio_ = true;
+        audioSampleRate_ = audioPar->sample_rate;
+        audioChannels_ = audioPar->ch_layout.nb_channels;
+
+        if (audioPar->codec_id == AV_CODEC_ID_AAC) {
+            audioCodec_ = 0x61616320; // 'aac '
+        } else if (audioPar->codec_id == AV_CODEC_ID_MP3) {
+            audioCodec_ = 0x6D703320; // 'mp3 '
+        } else {
+            audioCodec_ = audioPar->codec_tag;
+        }
+
+        logNotice("VideoPlayer") << "Audio: " << audioChannels_ << "ch, " << audioSampleRate_ << "Hz";
+    }
+
+    AVStream* videoStream = formatCtx_->streams[videoStreamIndex_];
+    AVCodecParameters* codecPar = videoStream->codecpar;
+
+    // Find decoder
+    const AVCodec* codec = avcodec_find_decoder(codecPar->codec_id);
+    if (!codec) {
+        logError("VideoPlayer") << "Codec not found";
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    // Create codec context
+    codecCtx_ = avcodec_alloc_context3(codec);
+    if (!codecCtx_) {
+        logError("VideoPlayer") << "Failed to allocate codec context";
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    if (avcodec_parameters_to_context(codecCtx_, codecPar) < 0) {
+        logError("VideoPlayer") << "Failed to copy codec parameters";
+        avcodec_free_context(&codecCtx_);
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    // Try hardware acceleration (CUDA / VAAPI / VDPAU / V4L2M2M / DRM).
+    // User can opt out via VideoPlayer::setUseHwAccel(false). Falls back to SW.
+    if (player && player->getUseHwAccel()) {
+        hwType_ = tryCreateHwDevice(&hwDeviceCtx_);
+        if (hwType_ != AV_HWDEVICE_TYPE_NONE) {
+            codecCtx_->hw_device_ctx = av_buffer_ref(hwDeviceCtx_);
+            logNotice("VideoPlayer") << "Using HW backend: " << av_hwdevice_get_type_name(hwType_);
+        } else {
+            logNotice("VideoPlayer") << "No HW backend available, using software decoding";
+        }
+    } else {
+        logNotice("VideoPlayer") << "HW accel disabled by user, using software decoding";
+    }
+
+    // Open codec (fallback to SW on HW open failure)
+    if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
+        if (hwType_ != AV_HWDEVICE_TYPE_NONE) {
+            logWarning("VideoPlayer") << "HW codec open failed, falling back to SW";
+            hwType_ = AV_HWDEVICE_TYPE_NONE;
+            av_buffer_unref(&hwDeviceCtx_);
+            avcodec_free_context(&codecCtx_);
+            codecCtx_ = avcodec_alloc_context3(codec);
+            avcodec_parameters_to_context(codecCtx_, codecPar);
+        }
+        if (avcodec_open2(codecCtx_, codec, nullptr) < 0) {
+            logError("VideoPlayer") << "Failed to open codec";
+            avcodec_free_context(&codecCtx_);
+            avformat_close_input(&formatCtx_);
+            return false;
+        }
+    }
+
+    // Get video properties
+    width_ = codecCtx_->width;
+    height_ = codecCtx_->height;
+    timeBase_ = videoStream->time_base;
+
+    // Calculate frame rate
+    if (videoStream->avg_frame_rate.num > 0 && videoStream->avg_frame_rate.den > 0) {
+        frameRate_ = av_q2d(videoStream->avg_frame_rate);
+    } else if (videoStream->r_frame_rate.num > 0 && videoStream->r_frame_rate.den > 0) {
+        frameRate_ = av_q2d(videoStream->r_frame_rate);
+    }
+
+    // Calculate duration
+    if (formatCtx_->duration > 0) {
+        duration_ = formatCtx_->duration / (double)AV_TIME_BASE;
+    } else if (videoStream->duration > 0) {
+        duration_ = videoStream->duration * av_q2d(timeBase_);
+    }
+
+    logNotice("VideoPlayer") << "Video: " << width_ << "x" << height_
+                               << " @ " << frameRate_ << " fps, "
+                               << duration_ << " sec";
+
+    // Create scaler context (convert to RGBA)
+    swsCtx_ = sws_getContext(
+        width_, height_, codecCtx_->pix_fmt,
+        width_, height_, AV_PIX_FMT_RGBA,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
+    if (!swsCtx_) {
+        logError("VideoPlayer") << "Failed to create scaler context";
+        avcodec_free_context(&codecCtx_);
+        avformat_close_input(&formatCtx_);
+        return false;
+    }
+
+    // Allocate frames
+    frame_ = av_frame_alloc();
+    frameRGBA_ = av_frame_alloc();
+    packet_ = av_packet_alloc();
+
+    if (!frame_ || !frameRGBA_ || !packet_) {
+        logError("VideoPlayer") << "Failed to allocate frames";
+        close();
+        return false;
+    }
+
+    // Allocate RGBA buffer
+    rgbaBufferSize_ = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width_, height_, 1);
+    rgbaBuffer_ = (uint8_t*)av_malloc(rgbaBufferSize_);
+
+    av_image_fill_arrays(
+        frameRGBA_->data, frameRGBA_->linesize,
+        rgbaBuffer_, AV_PIX_FMT_RGBA,
+        width_, height_, 1
+    );
+
+    isLoaded_ = true;
+
+    // Pre-decode audio for playback using FFmpeg (audio stream only)
+    if (hasAudio_) {
+        if (loadAudioForPlayback()) {
+            logNotice("VideoPlayer") << "Audio decoded and ready";
+        } else {
+            logWarning("VideoPlayer") << "Failed to decode audio";
+        }
+    }
+
+    // Probe the first decoded frame so callers can see the post-transfer
+    // pixel format and pick NV12 fast path vs RGBA fallback accurately.
+    probeHwOutputFormat();
+
+    return true;
+}
+
+void TCVideoPlayerImpl::close() {
+    // Stop decode thread
+    shouldStop_ = true;
+    cv_.notify_all();
+
+    if (decodeThread_.joinable()) {
+        decodeThread_.join();
+    }
+
+    // Clear frame queue
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!frameQueue_.empty()) {
+            frameQueue_.pop();
+        }
+    }
+
+    // Free FFmpeg resources
+    if (hwDeviceCtx_) {
+        av_buffer_unref(&hwDeviceCtx_);
+        hwDeviceCtx_ = nullptr;
+    }
+    hwType_        = AV_HWDEVICE_TYPE_NONE;
+    lastScalerFmt_ = AV_PIX_FMT_NONE;
+
+    if (rgbaBuffer_) {
+        av_free(rgbaBuffer_);
+        rgbaBuffer_ = nullptr;
+    }
+
+    if (packet_) {
+        av_packet_free(&packet_);
+        packet_ = nullptr;
+    }
+
+    if (frameRGBA_) {
+        av_frame_free(&frameRGBA_);
+        frameRGBA_ = nullptr;
+    }
+
+    if (frame_) {
+        av_frame_free(&frame_);
+        frame_ = nullptr;
+    }
+
+    if (swsCtx_) {
+        sws_freeContext(swsCtx_);
+        swsCtx_ = nullptr;
+    }
+
+    if (codecCtx_) {
+        avcodec_free_context(&codecCtx_);
+        codecCtx_ = nullptr;
+    }
+
+    if (formatCtx_) {
+        avformat_close_input(&formatCtx_);
+        formatCtx_ = nullptr;
+    }
+
+    isLoaded_ = false;
+    isPlaying_ = false;
+    isPaused_ = false;
+    hasNewFrame_ = false;
+    isFinished_ = false;
+    width_ = 0;
+    height_ = 0;
+    audioSound_.stop();
+    audioBuffer_.reset();
+    hasAudio_ = false;
+    audioStreamIndex_ = -1;
+    audioCodec_ = 0;
+    audioSampleRate_ = 0;
+    audioChannels_ = 0;
+    filePath_.clear();
+}
+
+void TCVideoPlayerImpl::play() {
+    if (!isLoaded_) return;
+
+    // Reset state
+    isFinished_ = false;
+    shouldStop_ = false;
+
+    // Seek to beginning if finished
+    if (currentPts_ >= duration_ - 0.1) {
+        seekToTime(0.0);
+    }
+
+    // Start decode thread if not running
+    if (!decodeThread_.joinable()) {
+        decodeThread_ = std::thread(&TCVideoPlayerImpl::decodeThread, this);
+    }
+
+    playbackStartTime_ = av_gettime_relative() / 1000000.0 - currentPts_;
+    isPlaying_ = true;
+    isPaused_ = false;
+    cv_.notify_all();
+
+    if (audioBuffer_) {
+        audioSound_.play();
+        audioSound_.setPosition(static_cast<float>(currentPts_));
+        audioSound_.setVolume(volume_);
+    }
+}
+
+void TCVideoPlayerImpl::stop() {
+    isPlaying_ = false;
+    isPaused_ = false;
+
+    audioSound_.stop();
+
+    // Seek to beginning
+    seekToTime(0.0);
+    currentPts_ = 0.0;
+
+    // Clear frame queue
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!frameQueue_.empty()) {
+            frameQueue_.pop();
+        }
+    }
+}
+
+void TCVideoPlayerImpl::setPaused(bool paused) {
+    if (paused && !isPaused_) {
+        // Pause: record current time
+        pausedTime_ = av_gettime_relative() / 1000000.0;
+        isPaused_ = true;
+    } else if (!paused && isPaused_) {
+        // Resume: adjust start time
+        double pauseDuration = av_gettime_relative() / 1000000.0 - pausedTime_;
+        playbackStartTime_ += pauseDuration;
+        isPaused_ = false;
+        cv_.notify_all();
+    }
+
+    if (audioBuffer_) {
+        if (paused) audioSound_.pause();
+        else audioSound_.resume();
+    }
+}
+
+void TCVideoPlayerImpl::update(VideoPlayer* player) {
+    hasNewFrame_ = false;
+
+    if (!isLoaded_ || !isPlaying_ || isPaused_) return;
+
+    // Target PTS: use audio as master clock when available (no drift).
+    // Fall back to wall clock for audio-less videos.
+    double targetPts;
+    if (audioBuffer_) {
+        targetPts = audioSound_.getPosition();
+    } else {
+        double elapsed = av_gettime_relative() / 1000000.0 - playbackStartTime_;
+        targetPts = elapsed * speed_;
+    }
+
+    // Hard re-sync if drift exceeds threshold (e.g. window backgrounded on
+    // Wayland — compositor throttles frame callbacks while audio keeps
+    // playing; CPU spikes; decode stalls). Seeking is far cheaper than
+    // decoding every intermediate frame to catch up.
+    // Threshold configurable via VideoPlayer::setResyncThreshold();
+    // <= 0 disables the check.
+    float resyncThreshold = player ? player->getResyncThreshold() : 0.5f;
+    if (resyncThreshold > 0.0f &&
+        std::abs(targetPts - currentPts_) > resyncThreshold) {
+        seekToTime(targetPts);
+        return;  // next update() will pick up freshly decoded frames
+    }
+
+    // Get frame from queue if available and PTS is right
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    while (!frameQueue_.empty()) {
+        FrameData& front = frameQueue_.front();
+
+        if (front.pts <= targetPts) {
+            if (player) {
+                if (front.isNV12) {
+                    unsigned char* yBuf  = player->getPixelsY();
+                    unsigned char* uvBuf = player->getPixelsUV();
+                    if (yBuf  && front.pixels.size()   == (size_t)(width_ * height_) &&
+                        uvBuf && front.pixelsUV.size() == (size_t)(width_ * height_ / 2)) {
+                        memcpy(yBuf,  front.pixels.data(),   front.pixels.size());
+                        memcpy(uvBuf, front.pixelsUV.data(), front.pixelsUV.size());
+                        hasNewFrame_ = true;
+                        currentPts_  = front.pts;
+                    }
+                } else {
+                    unsigned char* playerPixels = player->getPixels();
+                    if (playerPixels && front.pixels.size() == (size_t)(width_ * height_ * 4)) {
+                        memcpy(playerPixels, front.pixels.data(), front.pixels.size());
+                        hasNewFrame_ = true;
+                        currentPts_  = front.pts;
+                    }
+                }
+            }
+            frameQueue_.pop();
+        } else {
+            break;
+        }
+    }
+
+    // Check if finished
+    if (frameQueue_.empty() && isFinished_) {
+        if (isLoop_) {
+            if (audioBuffer_) {
+                audioSound_.setPosition(0.0f);
+            }
+            seekToTime(0.0);
+            playbackStartTime_ = av_gettime_relative() / 1000000.0;
+            isFinished_ = false;
+            cv_.notify_all();
+        } else {
+            isPlaying_ = false;
+        }
+    }
+
+    cv_.notify_all();
+}
+
+void TCVideoPlayerImpl::decodeThread() {
+    while (!shouldStop_) {
+        // Wait if paused or queue is full
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this] {
+                return shouldStop_ ||
+                       (isPlaying_ && !isPaused_ && frameQueue_.size() < MAX_QUEUE_SIZE) ||
+                       seekRequested_;
+            });
+        }
+
+        if (shouldStop_) break;
+
+        // Handle seek request
+        if (seekRequested_) {
+            double target = seekTarget_;
+            seekRequested_ = false;
+
+            int64_t timestamp = (int64_t)(target / av_q2d(timeBase_));
+            av_seek_frame(formatCtx_, videoStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD);
+            avcodec_flush_buffers(codecCtx_);
+
+            // Any packet held from a previous EAGAIN is invalidated by the seek.
+            if (packetPending_) {
+                av_packet_unref(packet_);
+                packetPending_ = false;
+            }
+
+            // Clear queue
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                while (!frameQueue_.empty()) {
+                    frameQueue_.pop();
+                }
+            }
+
+            currentPts_ = target;
+            continue;
+        }
+
+        // Decode next frame
+        if (!decodeNextFrame()) {
+            isFinished_ = true;
+        }
+    }
+}
+
+// Decodes a single frame up-front to learn the actual post-transfer pixel
+// format (e.g. NV12 on VAAPI/NVDEC, P010 for 10-bit, YUV420P on some
+// V4L2M2M). The format only becomes knowable after av_hwframe_transfer_data
+// runs, so we cannot decide it from hwType_ alone. The demuxer is rewound
+// and the codec flushed afterwards so playback starts cleanly from frame 0.
+void TCVideoPlayerImpl::probeHwOutputFormat() {
+    probedFormat_ = AV_PIX_FMT_NONE;
+    if (hwType_ == AV_HWDEVICE_TYPE_NONE) return;  // SW decode: nothing to probe
+
+    AVFrame* probeFrame = av_frame_alloc();
+    bool captured = false;
+    constexpr int kMaxPackets = 64;  // keep probe bounded
+
+    for (int i = 0; i < kMaxPackets && !captured; ++i) {
+        int ret = av_read_frame(formatCtx_, packet_);
+        if (ret < 0) break;
+        if (packet_->stream_index != videoStreamIndex_) {
+            av_packet_unref(packet_);
+            continue;
+        }
+
+        ret = avcodec_send_packet(codecCtx_, packet_);
+        av_packet_unref(packet_);
+        if (ret < 0 && ret != AVERROR(EAGAIN)) continue;
+
+        while (!captured) {
+            ret = avcodec_receive_frame(codecCtx_, frame_);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+            if (ret < 0) { captured = false; break; }
+
+            if (frame_->hw_frames_ctx) {
+                probeFrame->format = AV_PIX_FMT_NONE;
+                if (av_hwframe_transfer_data(probeFrame, frame_, 0) >= 0) {
+                    probedFormat_ = (AVPixelFormat)probeFrame->format;
+                    captured = true;
+                }
+                av_frame_unref(probeFrame);
+            } else {
+                probedFormat_ = (AVPixelFormat)frame_->format;
+                captured = true;
+            }
+            av_frame_unref(frame_);
+        }
+    }
+
+    av_frame_free(&probeFrame);
+    av_frame_unref(frame_);
+
+    // Reset demuxer + codec state so the decode thread starts from frame 0.
+    av_seek_frame(formatCtx_, videoStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
+    avcodec_flush_buffers(codecCtx_);
+    packetPending_ = false;
+
+    if (captured) {
+        const char* name = av_get_pix_fmt_name(probedFormat_);
+        logNotice("VideoPlayer") << "HW transfer format: "
+                                  << (name ? name : "unknown");
+    } else {
+        logWarning("VideoPlayer") << "HW format probe failed; using RGBA fallback";
+    }
+}
+
+bool TCVideoPlayerImpl::decodeNextFrame() {
+    char errbuf[128];
+    while (true) {
+        // Drain the decoder first. HW backends (VAAPI/NVDEC) and streams with
+        // B-frames keep several frames in flight, so output is often ready
+        // before the next packet is fed. Pulling frames first prevents the
+        // internal queue from filling up and producing spurious EAGAIN on
+        // subsequent avcodec_send_packet calls.
+        int ret = avcodec_receive_frame(codecCtx_, frame_);
+
+        if (ret == AVERROR(EAGAIN)) {
+            // Decoder wants more input. Either resend a pending packet held
+            // from a prior EAGAIN on send, or read a new one from the demuxer.
+            if (!packetPending_) {
+                int rret = av_read_frame(formatCtx_, packet_);
+                if (rret == AVERROR_EOF) {
+                    // Enter drain mode so remaining buffered frames are
+                    // flushed out on following receive_frame calls.
+                    avcodec_send_packet(codecCtx_, nullptr);
+                    continue;
+                }
+                if (rret < 0) {
+                    av_strerror(rret, errbuf, sizeof(errbuf));
+                    logWarning("VideoPlayer") << "av_read_frame ended: " << errbuf
+                                              << " (pts=" << currentPts_ << ")";
+                    return false;
+                }
+                if (packet_->stream_index != videoStreamIndex_) {
+                    av_packet_unref(packet_);
+                    continue;
+                }
+                packetPending_ = true;
+            }
+
+            int sret = avcodec_send_packet(codecCtx_, packet_);
+            if (sret == AVERROR(EAGAIN)) {
+                // Decoder is still full even after the receive above (can
+                // happen across format transitions). Keep the packet
+                // referenced and try to drain again on the next iteration.
+                continue;
+            }
+            av_packet_unref(packet_);
+            packetPending_ = false;
+
+            if (sret < 0 && sret != AVERROR_EOF) {
+                av_strerror(sret, errbuf, sizeof(errbuf));
+                logWarning("VideoPlayer") << "send_packet failed: " << errbuf
+                                          << " (pts=" << currentPts_ << ")";
+            }
+            continue;
+        }
+
+        if (ret == AVERROR_EOF) {
+            // Decoder fully drained after EOF was signalled upstream.
+            return false;
+        }
+        if (ret < 0) {
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            logWarning("VideoPlayer") << "receive_frame failed: " << errbuf
+                                      << " (pts=" << currentPts_ << ")";
+            return false;
+        }
+
+        // HW frames need to be transferred to CPU before scaling
+        AVFrame* srcFrame = frame_;
+        AVFrame* swFrame  = nullptr;
+        if (hwType_ != AV_HWDEVICE_TYPE_NONE && frame_->hw_frames_ctx) {
+            swFrame = av_frame_alloc();
+            // Use the HW backend's native format (e.g. NV12 on VAAPI) to
+            // avoid an extra pixel-format conversion during transfer. The
+            // scaler is rebuilt lazily on format change (lastScalerFmt_).
+            swFrame->format = AV_PIX_FMT_NONE;
+            if (av_hwframe_transfer_data(swFrame, frame_, 0) < 0) {
+                logWarning("VideoPlayer") << "HW frame transfer failed, dropping frame";
+                av_frame_free(&swFrame);
+                av_frame_unref(frame_);
+                continue;
+            }
+            srcFrame = swFrame;
+        }
+
+        // Calculate PTS (frame_->pts before any av_frame_unref)
+        double pts = 0.0;
+        if (frame_->pts != AV_NOPTS_VALUE)
+            pts = frame_->pts * av_q2d(timeBase_);
+
+        // NV12 fast path: copy Y+UV planes directly, skip sws_scale entirely
+        if (nv12Mode_ && srcFrame->format == AV_PIX_FMT_NV12) {
+            FrameData data;
+            data.isNV12 = true;
+            data.pts    = pts;
+
+            data.pixels.resize(width_ * height_);
+            for (int row = 0; row < height_; ++row)
+                std::memcpy(data.pixels.data()  + row * width_,
+                            srcFrame->data[0]   + row * srcFrame->linesize[0],
+                            width_);
+
+            const int uvRows     = height_ / 2;
+            const int uvRowBytes = width_;      // (width/2 pairs) * 2 bytes = width
+            data.pixelsUV.resize(uvRows * uvRowBytes);
+            for (int row = 0; row < uvRows; ++row)
+                std::memcpy(data.pixelsUV.data() + row * uvRowBytes,
+                            srcFrame->data[1]    + row * srcFrame->linesize[1],
+                            uvRowBytes);
+
+            if (swFrame) av_frame_free(&swFrame);
+            av_frame_unref(frame_);
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            frameQueue_.push(std::move(data));
+            return true;
+        }
+
+        // RGBA fallback: sws_scale for non-CUDA or non-NV12
+        AVPixelFormat srcFmt = (AVPixelFormat)srcFrame->format;
+        if (srcFmt != lastScalerFmt_ && srcFmt != AV_PIX_FMT_NONE) {
+            if (swsCtx_) sws_freeContext(swsCtx_);
+            swsCtx_ = sws_getContext(
+                width_, height_, srcFmt,
+                width_, height_, AV_PIX_FMT_RGBA,
+                SWS_BILINEAR, nullptr, nullptr, nullptr);
+            lastScalerFmt_ = srcFmt;
+        }
+
+        if (swsCtx_ && srcFrame->data[0]) {
+            sws_scale(
+                swsCtx_,
+                srcFrame->data, srcFrame->linesize,
+                0, height_,
+                frameRGBA_->data, frameRGBA_->linesize);
+        }
+
+        if (swFrame) av_frame_free(&swFrame);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            FrameData data;
+            data.pixels.resize(width_ * height_ * 4);
+            memcpy(data.pixels.data(), rgbaBuffer_, data.pixels.size());
+            data.pts = pts;
+            frameQueue_.push(std::move(data));
+        }
+
+        av_frame_unref(frame_);
+        return true;
+    }
+}
+
+bool TCVideoPlayerImpl::loadAudioForPlayback() {
+    if (!hasAudio_ || filePath_.empty()) return false;
+
+    AVFormatContext* fmtCtx = nullptr;
+    if (avformat_open_input(&fmtCtx, filePath_.c_str(), nullptr, nullptr) < 0) return false;
+    if (avformat_find_stream_info(fmtCtx, nullptr) < 0) {
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    // Find audio stream only
+    int audioIdx = -1;
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
+        if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audioIdx = i;
+            break;
+        }
+    }
+    if (audioIdx < 0) {
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    // Open audio decoder
+    AVCodecParameters* par = fmtCtx->streams[audioIdx]->codecpar;
+    const AVCodec* codec = avcodec_find_decoder(par->codec_id);
+    if (!codec) {
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+    AVCodecContext* audioCtx = avcodec_alloc_context3(codec);
+    avcodec_parameters_to_context(audioCtx, par);
+    if (avcodec_open2(audioCtx, codec, nullptr) < 0) {
+        avcodec_free_context(&audioCtx);
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    // Set up resampler: native → F32 interleaved stereo at AudioEngine::SAMPLE_RATE
+    SwrContext* swr = nullptr;
+    AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_STEREO;
+    if (swr_alloc_set_opts2(&swr,
+            &outLayout,           AV_SAMPLE_FMT_FLT, AudioEngine::SAMPLE_RATE,
+            &audioCtx->ch_layout, audioCtx->sample_fmt, audioCtx->sample_rate,
+            0, nullptr) < 0 || swr_init(swr) < 0) {
+        if (swr) swr_free(&swr);
+        avcodec_free_context(&audioCtx);
+        avformat_close_input(&fmtCtx);
+        return false;
+    }
+
+    // Reserve estimated buffer space
+    std::vector<float> samples;
+    if (duration_ > 0)
+        samples.reserve((size_t)(duration_ * AudioEngine::SAMPLE_RATE * 2 * 1.05));
+
+    AVFrame* frame = av_frame_alloc();
+    AVPacket* pkt  = av_packet_alloc();
+
+    auto appendConverted = [&](int nbIn) {
+        int outN = av_rescale_rnd(
+            swr_get_delay(swr, audioCtx->sample_rate) + nbIn,
+            AudioEngine::SAMPLE_RATE, audioCtx->sample_rate, AV_ROUND_UP);
+        std::vector<float> buf(outN * 2);
+        uint8_t* outData[1] = { (uint8_t*)buf.data() };
+        int n = swr_convert(swr, outData, outN,
+                            nbIn > 0 ? (const uint8_t**)frame->data : nullptr, nbIn);
+        if (n > 0)
+            samples.insert(samples.end(), buf.begin(), buf.begin() + n * 2);
+    };
+
+    while (av_read_frame(fmtCtx, pkt) >= 0) {
+        if (pkt->stream_index == audioIdx) {
+            if (avcodec_send_packet(audioCtx, pkt) == 0) {
+                while (avcodec_receive_frame(audioCtx, frame) == 0) {
+                    appendConverted(frame->nb_samples);
+                    av_frame_unref(frame);
+                }
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    // Flush decoder
+    avcodec_send_packet(audioCtx, nullptr);
+    while (avcodec_receive_frame(audioCtx, frame) == 0) {
+        appendConverted(frame->nb_samples);
+        av_frame_unref(frame);
+    }
+
+    // Flush resampler
+    appendConverted(0);
+
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    swr_free(&swr);
+    avcodec_free_context(&audioCtx);
+    avformat_close_input(&fmtCtx);
+
+    if (samples.empty()) return false;
+
+    auto buf = std::make_shared<SoundBuffer>();
+    buf->samples   = std::move(samples);
+    buf->channels  = 2;
+    buf->sampleRate = AudioEngine::SAMPLE_RATE;
+    buf->numSamples = buf->samples.size() / 2;
+    audioBuffer_ = buf;
+    audioSound_.loadFromBuffer(audioBuffer_);
+
+    logNotice("VideoPlayer") << "Audio: " << buf->numSamples << " frames @ "
+                              << buf->sampleRate << " Hz";
+    return true;
+}
+
+// Helper: sample rate index for ADTS header
+static int adtsSampleRateIndex(int sampleRate) {
+    static const int rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
+    for (int i = 0; i < 13; i++) {
+        if (rates[i] == sampleRate) return i;
+    }
+    return 4; // default: 44100
+}
+
+// Helper: create 7-byte ADTS header
+static void createADTSHeader(uint8_t* hdr, int frameSize, int sampleRate, int channels) {
+    int srIdx = adtsSampleRateIndex(sampleRate);
+    int fullLen = frameSize + 7;
+    // AAC-LC profile (adtsProfile=1)
+    hdr[0] = 0xFF;
+    hdr[1] = 0xF1;
+    hdr[2] = (1 << 6) | ((srIdx & 0x0F) << 2) | ((channels >> 2) & 0x01);
+    hdr[3] = ((channels & 0x03) << 6) | ((fullLen >> 11) & 0x03);
+    hdr[4] = (fullLen >> 3) & 0xFF;
+    hdr[5] = ((fullLen & 0x07) << 5) | 0x1F;
+    hdr[6] = 0xFC;
+}
+
+std::vector<uint8_t> TCVideoPlayerImpl::getAudioData() const {
+    if (!hasAudio_ || filePath_.empty()) return {};
+
+    AVFormatContext* fmtCtx = nullptr;
+    if (avformat_open_input(&fmtCtx, filePath_.c_str(), nullptr, nullptr) < 0) return {};
+    if (avformat_find_stream_info(fmtCtx, nullptr) < 0) {
+        avformat_close_input(&fmtCtx);
+        return {};
+    }
+
+    int audioIdx = -1;
+    for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
+        if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audioIdx = i;
+            break;
+        }
+    }
+
+    if (audioIdx < 0) {
+        avformat_close_input(&fmtCtx);
+        return {};
+    }
+
+    bool isAAC = (fmtCtx->streams[audioIdx]->codecpar->codec_id == AV_CODEC_ID_AAC);
+
+    std::vector<uint8_t> audioData;
+    AVPacket* pkt = av_packet_alloc();
+
+    while (av_read_frame(fmtCtx, pkt) >= 0) {
+        if (pkt->stream_index == audioIdx) {
+            if (isAAC) {
+                uint8_t adtsHdr[7];
+                createADTSHeader(adtsHdr, pkt->size, audioSampleRate_, audioChannels_);
+                audioData.insert(audioData.end(), adtsHdr, adtsHdr + 7);
+            }
+            audioData.insert(audioData.end(), pkt->data, pkt->data + pkt->size);
+        }
+        av_packet_unref(pkt);
+    }
+
+    av_packet_free(&pkt);
+    avformat_close_input(&fmtCtx);
+
+    logNotice("VideoPlayer") << "Extracted audio: " << audioData.size() << " bytes";
+    return audioData;
+}
+
+void TCVideoPlayerImpl::seekToTime(double seconds) {
+    seekTarget_ = seconds;
+    seekRequested_ = true;
+    cv_.notify_all();
+}
+
+float TCVideoPlayerImpl::getPosition() const {
+    if (duration_ <= 0) return 0.0f;
+    return static_cast<float>(currentPts_ / duration_);
+}
+
+void TCVideoPlayerImpl::setPosition(float pct) {
+    double targetTime = pct * duration_;
+    seekToTime(targetTime);
+    playbackStartTime_ = av_gettime_relative() / 1000000.0 - targetTime;
+    if (audioBuffer_) {
+        audioSound_.setPosition(static_cast<float>(targetTime));
+    }
+}
+
+float TCVideoPlayerImpl::getDuration() const {
+    return static_cast<float>(duration_);
+}
+
+void TCVideoPlayerImpl::setVolume(float vol) {
+    volume_ = vol;
+    audioSound_.setVolume(vol);
+}
+
+void TCVideoPlayerImpl::setSpeed(float speed) {
+    speed_ = speed;
+    // Adjust playback start time to maintain position
+    double currentTime = av_gettime_relative() / 1000000.0;
+    playbackStartTime_ = currentTime - currentPts_ / speed_;
+}
+
+void TCVideoPlayerImpl::setLoop(bool loop) {
+    isLoop_ = loop;
+}
+
+int TCVideoPlayerImpl::getCurrentFrame() const {
+    if (frameRate_ <= 0) return 0;
+    return static_cast<int>(currentPts_ * frameRate_);
+}
+
+int TCVideoPlayerImpl::getTotalFrames() const {
+    if (frameRate_ <= 0) return 0;
+    return static_cast<int>(duration_ * frameRate_);
+}
+
+void TCVideoPlayerImpl::setFrame(int frame) {
+    if (frameRate_ > 0) {
+        double time = frame / frameRate_;
+        setPosition(static_cast<float>(time / duration_));
+    }
+}
+
+void TCVideoPlayerImpl::nextFrame() {
+    if (frameRate_ > 0) {
+        double frameTime = 1.0 / frameRate_;
+        seekToTime(currentPts_ + frameTime);
+    }
+}
+
+void TCVideoPlayerImpl::previousFrame() {
+    if (frameRate_ > 0) {
+        double frameTime = 1.0 / frameRate_;
+        double newTime = currentPts_ - frameTime;
+        if (newTime < 0) newTime = 0;
+        seekToTime(newTime);
+    }
+}
+
+// =============================================================================
+// VideoPlayer platform methods (Linux implementation)
+// =============================================================================
+
+#include "tc/gpu/shaders/videoNV12.glsl.h"
+
+// NV12 immediate-draw shader (immutable unit-quad, uniform-based positioning)
+class NV12VideoShader : public Shader {
+public:
+    void loadShader() { load(tc_video_nv12_nv12_shader_desc); }
+
+    void draw(float x, float y, float w, float h,
+              const Texture& texY, const Texture& texUV) {
+        if (!loaded) return;
+
+        ensureSwapchainPass();
+        sgl_draw();
+
+        sg_apply_pipeline(pipeline);
+
+        // x/y/w/h come in logical coordinates (same space tcApp draws in),
+        // but sapp_width()/sapp_height() are physical framebuffer pixels.
+        // Divide by DPI scale so the shader's viewport matches its inputs.
+        const float dpiScale = sapp_dpi_scale();
+        const float vpW = (float)sapp_width()  / dpiScale;
+        const float vpH = (float)sapp_height() / dpiScale;
+
+        struct VsParams { float v[8]; } p = {{
+            vpW, vpH, x, y,
+            w,   h,   0.0f, 0.0f
+        }};
+        sg_range range = { &p, sizeof(p) };
+        sg_apply_uniforms(0, &range);
+
+        sg_bindings bind = {};
+        bind.vertex_buffers[0] = vertexBuffer;
+        bind.index_buffer      = indexBuffer;
+        bind.views[0]    = texY.getView();
+        bind.samplers[0] = texY.getSampler();
+        bind.views[1]    = texUV.getView();
+        bind.samplers[1] = texUV.getSampler();
+        sg_apply_bindings(&bind);
+
+        sg_draw(0, 6, 1);
+
+        sg_reset_state_cache();
+        sgl_defaults();
+        sgl_matrix_mode_projection();
+        sgl_ortho(0.0f, vpW, vpH, 0.0f, -10000.0f, 10000.0f);
+        sgl_matrix_mode_modelview();
+        sgl_load_identity();
+    }
+
+protected:
+    sg_pipeline_desc createPipelineDesc() override {
+        sg_pipeline_desc desc = {};
+        desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT2;
+        desc.colors[0].blend.enabled = false;
+        desc.index_type = SG_INDEXTYPE_UINT16;
+        desc.label = "tc_nv12_pipeline";
+        return desc;
+    }
+
+    void createVertexBuffer() override {
+        float verts[] = { 0.f,0.f, 1.f,0.f, 1.f,1.f, 0.f,1.f };
+        sg_buffer_desc vd = {};
+        vd.data  = SG_RANGE(verts);
+        vd.label = "tc_nv12_verts";
+        vertexBuffer = sg_make_buffer(&vd);
+
+        uint16_t idx[] = { 0, 1, 2, 0, 2, 3 };
+        sg_buffer_desc id = {};
+        id.usage.index_buffer = true;
+        id.data  = SG_RANGE(idx);
+        id.label = "tc_nv12_idx";
+        indexBuffer = sg_make_buffer(&id);
+    }
+};
+
+namespace trussc {
+
+bool VideoPlayer::loadPlatform(const std::string& path) {
+    auto impl = new TCVideoPlayerImpl();
+
+    if (!impl->load(path, this)) {
+        delete impl;
+        return false;
+    }
+
+    platformHandle_ = impl;
+    width_  = impl->getWidth();
+    height_ = impl->getHeight();
+
+    if (width_ > 0 && height_ > 0) {
+        if (impl->isNV12Capable()) {
+            impl->nv12Mode_ = true;
+            nv12Mode_  = true;
+            pixelsY_   = new unsigned char[width_ * height_];
+            pixelsUV_  = new unsigned char[width_ * height_ / 2];
+            std::memset(pixelsY_,  0, width_ * height_);
+            std::memset(pixelsUV_, 128, width_ * height_ / 2);  // 128 = neutral chroma in NV12
+
+            auto* shader = new NV12VideoShader();
+            shader->loadShader();
+            nv12ShaderHandle_ = shader;
+        } else {
+            pixels_ = new unsigned char[width_ * height_ * 4];
+            std::memset(pixels_, 0, width_ * height_ * 4);
+        }
+    }
+
+    return true;
+}
+
+void VideoPlayer::closePlatform() {
+    if (nv12ShaderHandle_) {
+        delete static_cast<NV12VideoShader*>(nv12ShaderHandle_);
+        nv12ShaderHandle_ = nullptr;
+    }
+    if (platformHandle_) {
+        auto impl = static_cast<TCVideoPlayerImpl*>(platformHandle_);
+        delete impl;
+        platformHandle_ = nullptr;
+    }
+}
+
+void VideoPlayer::drawNV12Platform(float x, float y, float w, float h) const {
+    static_cast<NV12VideoShader*>(nv12ShaderHandle_)->draw(x, y, w, h, textureY_, textureUV_);
+}
+
+void VideoPlayer::playPlatform() {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->play();
+    }
+}
+
+void VideoPlayer::stopPlatform() {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->stop();
+    }
+}
+
+void VideoPlayer::setPausedPlatform(bool paused) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setPaused(paused);
+    }
+}
+
+void VideoPlayer::updatePlatform() {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->update(this);
+    }
+}
+
+bool VideoPlayer::hasNewFramePlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->hasNewFrame();
+    }
+    return false;
+}
+
+bool VideoPlayer::isFinishedPlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->isFinished();
+    }
+    return false;
+}
+
+float VideoPlayer::getPositionPlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getPosition();
+    }
+    return 0.0f;
+}
+
+void VideoPlayer::setPositionPlatform(float pct) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setPosition(pct);
+    }
+}
+
+float VideoPlayer::getDurationPlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getDuration();
+    }
+    return 0.0f;
+}
+
+void VideoPlayer::setVolumePlatform(float vol) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setVolume(vol);
+    }
+}
+
+void VideoPlayer::setSpeedPlatform(float speed) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setSpeed(speed);
+    }
+}
+
+void VideoPlayer::setLoopPlatform(bool loop) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setLoop(loop);
+    }
+}
+
+int VideoPlayer::getCurrentFramePlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getCurrentFrame();
+    }
+    return 0;
+}
+
+int VideoPlayer::getTotalFramesPlatform() const {
+    if (platformHandle_) {
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getTotalFrames();
+    }
+    return 0;
+}
+
+void VideoPlayer::setFramePlatform(int frame) {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->setFrame(frame);
+    }
+}
+
+void VideoPlayer::nextFramePlatform() {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->nextFrame();
+    }
+}
+
+void VideoPlayer::previousFramePlatform() {
+    if (platformHandle_) {
+        static_cast<TCVideoPlayerImpl*>(platformHandle_)->previousFrame();
+    }
+}
+
+// Audio access
+bool VideoPlayer::hasAudioPlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->hasAudio();
+    return false;
+}
+
+uint32_t VideoPlayer::getAudioCodecPlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getAudioCodec();
+    return 0;
+}
+
+std::vector<uint8_t> VideoPlayer::getAudioDataPlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getAudioData();
+    return {};
+}
+
+int VideoPlayer::getAudioSampleRatePlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getAudioSampleRate();
+    return 0;
+}
+
+int VideoPlayer::getAudioChannelsPlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getAudioChannels();
+    return 0;
+}
+
+bool VideoPlayer::isUsingHwAccelPlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->isUsingHwAccel();
+    return false;
+}
+
+std::string VideoPlayer::getHwAccelNamePlatform() const {
+    if (platformHandle_)
+        return static_cast<TCVideoPlayerImpl*>(platformHandle_)->getHwAccelName();
+    return "none";
+}
+
+bool VideoPlayer::extractFramePlatform(const std::string& path, Pixels& outPixels,
+                                       float timeSec, float* outDuration) {
+    // TODO: implement frame extraction on Linux
+    (void)path; (void)outPixels; (void)timeSec; (void)outDuration;
+    return false;
+}
+
+} // namespace trussc
+
+#endif // __linux__

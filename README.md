@@ -27,7 +27,7 @@ Inspired by openFrameworks, implemented simply with modern C++.
 - **Lightweight**: Minimal dependencies, built on sokol
 - **Header-only**: Most features are header-only
 - **C++20**: Leverages modern C++ features
-- **Cross-platform**: macOS (Metal), Windows (D3D11), Web (WebGPU). Linux/Raspberry Pi planned.
+- **Cross-platform**: macOS 14+ (Metal), Windows (D3D11), Web (WebGPU). Linux/Raspberry Pi planned.
 - **oF-like API**: Familiar design for openFrameworks users
 
 ## Quick Start
@@ -36,7 +36,7 @@ Inspired by openFrameworks, implemented simply with modern C++.
 
 ### Using Project Generator (Recommended)
 
-Use `projectGenerator/` to create projects via GUI.
+Build it once from `tools/` (run `tools/build_mac.command`, `tools/build_linux.sh`, or `tools/build_win.bat`) to create projects via GUI.
 Supports VSCode, Cursor, Xcode, and Visual Studio.
 
 ### Command Line Build
@@ -116,13 +116,13 @@ See also: [The Tau Manifesto](https://tauday.com/tau-manifesto)
 
 ## Dependencies
 
-sokol, Dear ImGui, stb, miniaudio, etc. are all bundled in `trussc/include/`.
+sokol, stb, miniaudio, etc. are all bundled in `core/include/`. Dear ImGui is available as the `tcxImGui` addon.
 See [LICENSE.md](docs/LICENSE.md) for details.
 
 ## Directory Structure
 
 ```
-trussc/include/
+core/include/
 ├── TrussC.h          # Main header (include this)
 ├── tcBaseApp.h       # App base class
 ├── tc/               # Feature headers
@@ -135,8 +135,7 @@ trussc/include/
 │   ├── sound/        # Audio playback
 │   ├── video/        # Video playback, webcam
 │   ├── network/      # TCP, UDP
-│   ├── utils/        # Timer, file dialogs, etc.
-│   └── gui/          # Dear ImGui integration
+│   └── utils/        # Timer, file dialogs, etc.
 ├── sokol/            # sokol library
 └── stb/              # stb library
 
