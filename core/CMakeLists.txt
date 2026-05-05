@@ -102,9 +102,6 @@ else()
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/linux/*.cpp)
 endif()
 
-# TrussC-dll specific file
-file(GLOB TC_DLL_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/platform_c_exports.cpp)
-
 # 全ソースをまとめる
 set(TC_ALL_SOURCES
     ${TC_HEADERS}
@@ -114,17 +111,19 @@ set(TC_ALL_SOURCES
     ${TC_NETWORK_SOURCES}
     ${TC_SOUND_SOURCES}
     ${TC_PLATFORM_SOURCES}
-    ${TC_DLL_PLATFORM_SOURCES}
 )
+
+# TrussC-dll specific file
+list(APPEND TC_ALL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/platform_c_exports.cpp)
 
 # Xcode / Visual Studio でディレクトリ構造を維持
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TC_ALL_SOURCES})
 
 # Create TrussC targets. If requested, create both SHARED and STATIC
 if(TRUSSC_BUILD_SHARED_AND_STATIC)
-    add_library(TrussC SHARED ${TC_ALL_SOURCES})
-    add_library(TrussC_static STATIC ${TC_ALL_SOURCES})
-    set(_TRUSSC_TARGETS TrussC TrussC_static)
+    add_library(TrussC_shared SHARED ${TC_ALL_SOURCES})
+    add_library(TrussC STATIC ${TC_ALL_SOURCES})
+    set(_TRUSSC_TARGETS TrussC TrussC_shared)
 else()
     add_library(TrussC STATIC ${TC_ALL_SOURCES})
     set(_TRUSSC_TARGETS TrussC)
@@ -168,54 +167,58 @@ endforeach()
 if(TC_PLATFORM_EMSCRIPTEN)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
         if(TC_GRAPHICS_BACKEND STREQUAL "WGPU")
-            target_compile_definitions(TrussC PUBLIC SOKOL_WGPU)
-            target_compile_options(TrussC PUBLIC --use-port=emdawnwebgpu)
+            target_compile_definitions(${_t} PUBLIC SOKOL_WGPU)
+            target_compile_options(${_t} PUBLIC --use-port=emdawnwebgpu)
         else()
-            target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
+            target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
         endif()
     endforeach()
     
     # Emscripten リンクオプションはアプリ側で設定（trussc_app.cmake）
 
 elseif(TC_PLATFORM_IOS)
-    target_compile_definitions(TrussC PUBLIC SOKOL_METAL)
-    target_link_libraries(TrussC PUBLIC
-        "-framework Foundation"
-        "-framework UIKit"
-        "-framework Metal"
-        "-framework MetalKit"
-        "-framework QuartzCore"
-        "-framework CoreGraphics"
-        "-framework AudioToolbox"
-        "-framework AVFoundation"
-        "-framework CoreMedia"
-        "-framework CoreVideo"
-        "-framework UniformTypeIdentifiers"
-        "-framework CoreMotion"
-        "-framework CoreLocation"
-        "-framework MediaPlayer"
-    )
-    target_compile_options(TrussC PRIVATE -fobjc-arc)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_METAL)
+        target_link_libraries(${_t} PUBLIC
+            "-framework Foundation"
+            "-framework UIKit"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework AudioToolbox"
+            "-framework AVFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+            "-framework UniformTypeIdentifiers"
+            "-framework CoreMotion"
+            "-framework CoreLocation"
+            "-framework MediaPlayer"
+        )
+        target_compile_options(${_t} PRIVATE -fobjc-arc)
+    endforeach()
 
 elseif(TC_PLATFORM_MACOS)
-    target_compile_definitions(TrussC PUBLIC SOKOL_METAL)
-    target_link_libraries(TrussC PUBLIC
-        "-framework Foundation"
-        "-framework UIKit"
-        "-framework Metal"
-        "-framework MetalKit"
-        "-framework QuartzCore"
-        "-framework CoreGraphics"
-        "-framework AudioToolbox"
-        "-framework AVFoundation"
-        "-framework CoreMedia"
-        "-framework CoreVideo"
-        "-framework CoreAudio"
-        "-framework IOKit"
-        "-framework CoreDisplay"
-        "-framework CoreLocation"
-    )
-    target_compile_options(TrussC PRIVATE -fobjc-arc)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_METAL)
+        target_link_libraries(${_t} PUBLIC
+            "-framework Foundation"
+            "-framework UIKit"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework AudioToolbox"
+            "-framework AVFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+            "-framework CoreAudio"
+            "-framework IOKit"
+            "-framework CoreDisplay"
+            "-framework CoreLocation"
+        )
+        target_compile_options(${_t} PRIVATE -fobjc-arc)
+    endforeach()
 
 elseif(TC_PLATFORM_MACOS)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
@@ -242,7 +245,7 @@ elseif(TC_PLATFORM_WINDOWS)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
         # WIN32_LEAN_AND_MEAN: windows.h の読み込みを軽量化
         # NOMINMAX: std::min / std::max との衝突を回避
-        target_compile_definitions(TrussC PUBLIC
+        target_compile_definitions(${_t} PUBLIC
             SOKOL_D3D11
             WIN32_LEAN_AND_MEAN
             NOMINMAX
@@ -252,12 +255,12 @@ elseif(TC_PLATFORM_WINDOWS)
         # Ninja+MSVC環境では、cmake --build <dir>（preset経由でない）実行時に
         # 環境変数が未設定になりヘッダやライブラリが見つからないエラーが起きるため。
         if(DEFINED ENV{INCLUDE})
-            target_include_directories(TrussC SYSTEM PUBLIC $ENV{INCLUDE})
+            target_include_directories(${_t} SYSTEM PUBLIC $ENV{INCLUDE})
         endif()
         if(DEFINED ENV{LIB})
-            target_link_directories(TrussC PUBLIC $ENV{LIB})
+            target_link_directories(${_t} PUBLIC $ENV{LIB})
         endif()
-        target_link_libraries(TrussC PUBLIC
+        target_link_libraries(${_t} PUBLIC
             d3d11
             dxgi
             dxguid
@@ -271,7 +274,7 @@ elseif(TC_PLATFORM_WINDOWS)
         )
         # MSVC: ソースファイルをUTF-8として扱う
         # /wd4244, /wd4267: int/float, size_t/int 変換警告を無効化
-        target_compile_options(TrussC PUBLIC /utf-8 /wd4244 /wd4267)
+        target_compile_options(${_t} PUBLIC /utf-8 /wd4244 /wd4267)
     endforeach()
 
 elseif(TC_PLATFORM_LINUX)
@@ -306,25 +309,32 @@ elseif(TC_PLATFORM_LINUX)
     endforeach()
 
 elseif(TC_PLATFORM_ANDROID)
-    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
-    target_link_libraries(TrussC PUBLIC
-        GLESv3
-        EGL
-        log
-        android
-    )
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
+        target_link_libraries(${_t} PUBLIC
+            GLESv3
+            EGL
+            log
+            android
+        )
+    endforeach()
 
 elseif(TC_PLATFORM_ANDROID)
-    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
-    target_link_libraries(TrussC PUBLIC
-        GLESv3
-        EGL
-        log
-        android
-    )
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
+        target_link_libraries(${_t} PUBLIC
+            GLESv3
+            EGL
+            log
+            android
+        )
+    endforeach()
 
 elseif(TC_PLATFORM_RASPBIAN)
-    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)
+    endforeach()
+
     find_package(X11 REQUIRED)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
@@ -332,12 +342,12 @@ elseif(TC_PLATFORM_RASPBIAN)
     pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-audio-1.0)
     
     foreach(_t IN LISTS _TRUSSC_TARGETS)
-        target_include_directories(TrussC PUBLIC
+        target_include_directories(${_t} PUBLIC
             ${GTK3_INCLUDE_DIRS}
             ${FFMPEG_INCLUDE_DIRS}
             ${GSTREAMER_INCLUDE_DIRS}
         )
-        target_link_libraries(TrussC PUBLIC
+        target_link_libraries(${_t} PUBLIC
             ${X11_LIBRARIES}
             ${X11_Xi_LIB}
             ${X11_Xcursor_LIB}
@@ -710,7 +720,11 @@ if(TC_SHADER_SOURCES)
     endforeach()
 
     add_custom_target(TrussC_shaders DEPENDS ${_TC_SHADER_OUTPUTS})
-    add_dependencies(TrussC TrussC_shaders)
+
+    # add_dependencies(TrussC TrussC_shaders)
+    foreach(_t IN LISTS _TRUSSC_TARGETS)
+        add_dependencies(${_t} TrussC_shaders)
+    endforeach()
     message(STATUS "[TrussC] Built-in shader compilation enabled")
 endif()
 
