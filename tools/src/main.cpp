@@ -2994,7 +2994,7 @@ static int cmdCompletion(const vector<string>& args) {
 // =============================================================================
 
 static void printTopHelp() {
-    cout << "trusscli — TrussC project tool\n"
+    cout << "trusscli — TrussC-dll project tool\n"
          << "\n"
          << "Usage:\n"
          << "  trusscli <command> [options]\n"
