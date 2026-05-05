@@ -38,7 +38,7 @@
 #include "tc/app/tcHeadlessState.h"
 
 // C wrapper exports for stable ABI
-#include "core/platform/c_exports.h"
+#include "platform_c_exports.h"
 
 // Platform-specific headers for memory usage
 #if defined(__APPLE__)

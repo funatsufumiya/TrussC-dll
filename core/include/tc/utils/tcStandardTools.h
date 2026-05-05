@@ -6,7 +6,7 @@
 
 #include "tcMCP.h"
 #include "tcUtils.h"
-#include "../platform/c_exports.h"
+// #include "platform_c_exports.h"
 #include "../events/tcCoreEvents.h"
 #include "stb/stb_image_write.h"
 #include "../graphics/tcPixels.h"

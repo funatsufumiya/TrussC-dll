@@ -102,6 +102,9 @@ else()
     file(GLOB TC_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/linux/*.cpp)
 endif()
 
+# TrussC-dll specific file
+file(GLOB TC_DLL_PLATFORM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/platform_c_exports.cpp)
+
 # 全ソースをまとめる
 set(TC_ALL_SOURCES
     ${TC_HEADERS}
@@ -111,10 +114,8 @@ set(TC_ALL_SOURCES
     ${TC_NETWORK_SOURCES}
     ${TC_SOUND_SOURCES}
     ${TC_PLATFORM_SOURCES}
+    ${TC_DLL_PLATFORM_SOURCES}
 )
-
-# Add C wrapper source (explicitly) so it's always compiled into TrussC
-list(APPEND TC_ALL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/platform/c_exports.cpp)
 
 # Xcode / Visual Studio でディレクトリ構造を維持
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TC_ALL_SOURCES})
