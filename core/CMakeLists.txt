@@ -18,6 +18,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 get_filename_component(TC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(TC_ROOT "${TC_ROOT}" CACHE PATH "TrussC root directory" FORCE)
 
+# TrussC-dll specific option
+option(TRUSSC_BUILD_SHARED_AND_STATIC "TRUSSC_BUILD_SHARED_AND_STATIC" ON)
+
 # =============================================================================
 # プラットフォーム検出
 # =============================================================================
@@ -121,11 +124,11 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TC_ALL_SOURCES})
 
 # Create TrussC targets. If requested, create both SHARED and STATIC
 if(TRUSSC_BUILD_SHARED_AND_STATIC)
-    add_library(TrussC_shared SHARED ${TC_ALL_SOURCES})
-    add_library(TrussC STATIC ${TC_ALL_SOURCES})
-    set(_TRUSSC_TARGETS TrussC TrussC_shared)
+    add_library(TrussC SHARED ${TC_ALL_SOURCES})
+    add_library(TrussC_static STATIC ${TC_ALL_SOURCES})
+    set(_TRUSSC_TARGETS TrussC TrussC_static)
 else()
-    add_library(TrussC STATIC ${TC_ALL_SOURCES})
+    add_library(TrussC SHARED ${TC_ALL_SOURCES})
     set(_TRUSSC_TARGETS TrussC)
 endif()
 
