@@ -205,12 +205,11 @@ elseif(TC_PLATFORM_MACOS)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
         target_compile_definitions(${_t} PUBLIC SOKOL_METAL)
         target_link_libraries(${_t} PUBLIC
-            "-framework Foundation"
-            "-framework UIKit"
             "-framework Metal"
             "-framework MetalKit"
+            "-framework Cocoa"
+            "-framework ImageIO"
             "-framework QuartzCore"
-            "-framework CoreGraphics"
             "-framework AudioToolbox"
             "-framework AVFoundation"
             "-framework CoreMedia"
