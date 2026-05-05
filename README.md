@@ -8,8 +8,7 @@ On macOS, the same source code cannot be shared between static lib project and d
 So please use `CMake only` in projectGenerator, and try below:
 
 ```bash
-$ cmake -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-$ cmake --build build --parallel 8 -j 8 --config Release
+$ cmake --build --preset macos
 ```
 
 -----
