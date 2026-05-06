@@ -152,6 +152,15 @@ macro(trussc_app)
     # triggers reconfig if the result changed. Using a CMake script (rather
     # than a shell script) keeps this cross-platform — Windows doesn't ship
     # `sh` by default.
+    #
+    # Hot-reload-unsupported platforms (Android / Emscripten / iOS) force
+    # _TC_HOT_RELOAD off above regardless of the source scan, so the runtime
+    # check must agree — otherwise it spots TC_HOT_RELOAD in .cpp, decides
+    # CURRENT="ON", and fails the build forever with "state changed".
+    set(_TC_HR_PLATFORM_SUPPORTED "TRUE")
+    if(EMSCRIPTEN OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(_TC_HR_PLATFORM_SUPPORTED "FALSE")
+    endif()
     set(_TC_HR_CHECK_SCRIPT "${CMAKE_BINARY_DIR}/_tc_check_hot_reload.cmake")
     set(_TC_HR_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
     set(_TC_HR_CMAKELISTS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
@@ -160,6 +169,13 @@ macro(trussc_app)
 set(STATE_FILE \"${_TC_HR_STATE_FILE}\")
 set(SRC_DIR    \"${_TC_HR_SRC_DIR}\")
 set(CMAKELISTS \"${_TC_HR_CMAKELISTS}\")
+set(PLATFORM_SUPPORTED ${_TC_HR_PLATFORM_SUPPORTED})
+
+# Hot reload is unavailable on this platform — TC_HOT_RELOAD in source is
+# treated as a no-op, so just confirm OFF without scanning.
+if(NOT PLATFORM_SUPPORTED)
+    return()
+endif()
 
 set(PREV \"\")
 if(EXISTS \"\${STATE_FILE}\")
