@@ -332,6 +332,15 @@ elseif(TC_PLATFORM_ANDROID)
         )
     endforeach()
 
+elseif(TC_PLATFORM_ANDROID)
+    target_compile_definitions(TrussC PUBLIC SOKOL_GLES3)
+    target_link_libraries(TrussC PUBLIC
+        GLESv3
+        EGL
+        log
+        android
+    )
+
 elseif(TC_PLATFORM_RASPBIAN)
     foreach(_t IN LISTS _TRUSSC_TARGETS)
         target_compile_definitions(${_t} PUBLIC SOKOL_GLES3)

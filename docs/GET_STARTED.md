@@ -87,8 +87,6 @@ Build the project creation tool (first time only).
 
 **Linux:** Run `./tools/build_linux.sh` (dependencies are installed automatically)
 
-**Linux:** Run `./projectGenerator/buildProjectGenerator_linux.sh` (dependencies are installed automatically)
-
 ---
 
 ## 3. Create a Project

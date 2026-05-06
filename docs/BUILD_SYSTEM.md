@@ -43,12 +43,6 @@ trusscli update -p path/to/myProject --android
 # Enable iOS build
 trusscli update -p path/to/myProject --ios
 
-# Enable Android build
-projectGenerator --update path/to/myProject --android
-
-# Enable iOS build
-projectGenerator --update path/to/myProject --ios
-
 # Specify TrussC root explicitly (if auto-detection fails)
 trusscli update -p path/to/myProject --tc-root path/to/TrussC
 
