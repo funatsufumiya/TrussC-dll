@@ -242,7 +242,7 @@ endif()
             "${TRUSSC_DIR}/include"
         )
         target_compile_features(guest PRIVATE cxx_std_20)
-        target_compile_definitions(guest PRIVATE TC_HOT_RELOAD_BUILD)
+        target_compile_definitions(guest PRIVATE TC_HOT_RELOAD_BUILD TRUSSC_SHOW_CONSOLE)
         # GuestはTrussCにリンクしない（シンボルはHostから実行時解決）が、
         # TrussCのPUBLICコンパイル設定（/utf-8, Windows SDK include, SOKOL_D3D11等）は必要。
         get_target_property(_TC_PUB_OPTS TrussC INTERFACE_COMPILE_OPTIONS)
@@ -281,6 +281,11 @@ endif()
         else()
             target_compile_options(guest PRIVATE -O0)
         endif()
+
+        # Guest: precompile TrussC.h. The header is the dominant cost when
+        # parsing each guest .cpp (~2s for ~2700 lines), so caching it once
+        # per build dramatically shortens reload turnaround.
+        target_precompile_headers(guest PRIVATE <TrussC.h>)
         # Guest: resolve TrussC symbols at runtime from the Host process.
         # macOS/Linux use flat namespace lookup; Windows uses import library.
         if(APPLE)
@@ -466,8 +471,85 @@ message(\"  [HotReload] Generated \${DEF_FILE} with \${SYM_COUNT} symbols\")
         endif()
     endif()
 
-    # Apply addons from addons.make
-    apply_addons(${PROJECT_NAME})
+    # Addons: in normal builds they're linked into the project executable.
+    # In hot-reload builds they live inside the guest .dylib instead — addon-held
+    # state (audio engines, OSC sockets, ImGui context, ...) is then destroyed
+    # and recreated alongside the user's tcApp on each reload. This avoids the
+    # "setup() runs twice → double-registered handlers" footgun, at the cost
+    # of not preserving addon state across reloads (acceptable: just edit, save,
+    # see the new app spin up clean).
+    #
+    # TrussC core is NOT moved into the guest — it stays force-loaded in the
+    # host so audio threads, the OSC service, GPU resource pools etc. survive
+    # reloads as singletons. Only addons (and the user's own code) reset.
+    if(TARGET guest)
+        set(_TC_ADDONS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/addons.make")
+        if(EXISTS "${_TC_ADDONS_FILE}")
+            file(STRINGS "${_TC_ADDONS_FILE}" _TC_ADDON_LINES)
+            foreach(_TC_LINE ${_TC_ADDON_LINES})
+                string(STRIP "${_TC_LINE}" _TC_LINE)
+                if(_TC_LINE AND NOT _TC_LINE MATCHES "^#")
+                    # Create the addon's CMake target (without linking to host).
+                    _tc_load_addon(${_TC_LINE})
+                    if(TARGET ${_TC_LINE})
+                        # Compile-time: propagate headers / defs / options.
+                        # Headers go to BOTH host and guest because the host's
+                        # main.cpp typically transitively includes the user's
+                        # tcApp.h, which may pull in addon headers. The host
+                        # never CALLS addon code so it doesn't need to link
+                        # the static lib — only see the declarations.
+                        get_target_property(_TC_A_INCS ${_TC_LINE} INTERFACE_INCLUDE_DIRECTORIES)
+                        if(_TC_A_INCS)
+                            target_include_directories(guest PRIVATE ${_TC_A_INCS})
+                            target_include_directories(${PROJECT_NAME} PRIVATE ${_TC_A_INCS})
+                        endif()
+                        get_target_property(_TC_A_SYS_INCS ${_TC_LINE} INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+                        if(_TC_A_SYS_INCS)
+                            target_include_directories(guest        SYSTEM PRIVATE ${_TC_A_SYS_INCS})
+                            target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${_TC_A_SYS_INCS})
+                        endif()
+                        get_target_property(_TC_A_DEFS ${_TC_LINE} INTERFACE_COMPILE_DEFINITIONS)
+                        if(_TC_A_DEFS)
+                            target_compile_definitions(guest        PRIVATE ${_TC_A_DEFS})
+                            target_compile_definitions(${PROJECT_NAME} PRIVATE ${_TC_A_DEFS})
+                        endif()
+                        get_target_property(_TC_A_OPTS ${_TC_LINE} INTERFACE_COMPILE_OPTIONS)
+                        if(_TC_A_OPTS)
+                            target_compile_options(guest        PRIVATE ${_TC_A_OPTS})
+                            target_compile_options(${PROJECT_NAME} PRIVATE ${_TC_A_OPTS})
+                        endif()
+
+                        # Link-time: link the addon static lib's archive file
+                        # directly into the GUEST only. Using $<TARGET_FILE:..>
+                        # skips CMake's transitive resolution, so the addon's
+                        # PUBLIC TrussC dependency does NOT pull TrussC into
+                        # the guest .dylib — TrussC stays a singleton in the
+                        # host, addon code in the guest leaves TrussC symbols
+                        # unresolved at link time, and dyld resolves them
+                        # against the host process at dlopen time.
+                        get_target_property(_TC_A_TYPE ${_TC_LINE} TYPE)
+                        if(_TC_A_TYPE STREQUAL "STATIC_LIBRARY")
+                            # Linux requires every object file linked into a
+                            # shared library to be position-independent. Static
+                            # libs default to non-PIC on Linux/GCC, so the
+                            # guest .so link fails with "relocation R_X86_64_PC32
+                            # ... can not be used when making a shared object;
+                            # recompile with -fPIC". Forcing PIC on the addon
+                            # target itself is harmless on macOS/Windows.
+                            set_target_properties(${_TC_LINE} PROPERTIES
+                                POSITION_INDEPENDENT_CODE ON)
+                            target_link_libraries(guest PRIVATE $<TARGET_FILE:${_TC_LINE}>)
+                            add_dependencies(guest ${_TC_LINE})
+                        endif()
+                        # INTERFACE_LIBRARY (header-only addons): nothing to link.
+                    endif()
+                endif()
+            endforeach()
+        endif()
+    else()
+        # Normal build: link addons into the project executable.
+        apply_addons(${PROJECT_NAME})
+    endif()
 
     # Include project-local CMake config if it exists
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/local.cmake")
