@@ -2,6 +2,9 @@
 
 This branch has experiments to export dll from TrussC, including addons, in order to use them from other dynamic (scripting) language etc.
 
+> [!Warning]
+> Addon is not properly supported now (just static linked to TrussC.lib). See [TrussC.jl/issues/3#issuecomment-4470696728](https://github.com/funatsufumiya/TrussC.jl/issues/3#issuecomment-4470696728) and [TrussC.jl/issues/3#issuecomment-4475108082](https://github.com/funatsufumiya/TrussC.jl/issues/3#issuecomment-4475108082).
+
 ## Known Issues
 
 ### macOS Xcode Limitation
